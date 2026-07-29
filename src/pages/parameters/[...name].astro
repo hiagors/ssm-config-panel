@@ -1,6 +1,6 @@
 ---
 import Base from '../../layouts/Base.astro';
-import ParameterViewer from '../../components/ParameterViewer.tsx';
+import ParameterEditor from '../../components/editor/ParameterEditor.tsx';
 import { GetParameterUseCase } from '../../application/GetParameterUseCase.js';
 import type { GetParameterResult } from '../../application/GetParameterUseCase.js';
 import { getParameterStore, resolveDriver } from '../../infrastructure/store/index.js';
@@ -18,6 +18,7 @@ let loadError: string | undefined;
 try {
   parameter = await new GetParameterUseCase(getParameterStore()).execute(name);
 } catch (error) {
+  // Mesma política da fronteira HTTP: só mensagem curada atravessa.
   loadError = isAppError(error)
     ? error.publicMessage
     : 'Não foi possível ler o parâmetro. Consulte o terminal do servidor.';
@@ -25,16 +26,21 @@ try {
 ---
 
 <Base title={name} driver={driver}>
-  <p style="margin: 0 0 0.5rem;"><a href="/">← Todos os parâmetros</a></p>
+  <p class="back-link"><a href="/">← Todos os parâmetros</a></p>
 
   {
     loadError ? (
       <>
-        <h1 style="font-family: var(--mono); font-size: 1.05rem;">{name}</h1>
+        <h1 class="param-name">{name}</h1>
         <p class="notice error">{loadError}</p>
+        <p class="muted">
+          Parâmetro inexistente não vira criação implícita. Criar é fluxo separado e explícito,
+          com escolha consciente de <code>Type</code>, <code>Tier</code> e <code>KeyId</code> — e
+          entra na Fase 4.
+        </p>
       </>
     ) : (
-      <ParameterViewer parameter={parameter!} client:load />
+      <ParameterEditor parameter={parameter!} client:load />
     )
   }
 </Base>

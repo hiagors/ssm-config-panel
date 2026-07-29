@@ -188,6 +188,290 @@ const { title, driver } = Astro.props;
         border-left-color: var(--danger);
         background: #1f1315;
       }
+
+      /* ── editor de chave-valor ────────────────────────────────────────── */
+
+      .back-link {
+        margin: 0 0 0.5rem;
+      }
+
+      .param-name {
+        font-family: var(--mono);
+        font-size: 1.05rem;
+        word-break: break-all;
+        margin: 0 0 0.5rem;
+      }
+
+      .badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0.5rem 0 1rem;
+      }
+
+      .badge.dirty {
+        border-color: var(--warn);
+        color: var(--warn);
+      }
+
+      .secret-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--warn);
+        background: #1d1a12;
+        border-radius: 0 8px 8px 0;
+        padding: 0.7rem 0.9rem;
+        font-size: 13px;
+        margin-bottom: 1rem;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 0.25rem;
+        margin-bottom: -1px;
+      }
+
+      button.tab {
+        background: transparent;
+        border: 1px solid var(--border);
+        border-bottom-color: transparent;
+        border-radius: 8px 8px 0 0;
+        color: var(--muted);
+        font-weight: 500;
+        padding: 0.5rem 0.9rem;
+      }
+
+      button.tab.active {
+        background: var(--panel);
+        color: var(--text);
+      }
+
+      .editor-body {
+        border-radius: 0 10px 10px 10px;
+      }
+
+      .kv-block {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      .kv-empty {
+        margin: 0;
+        font-size: 13px;
+      }
+
+      .kv-row {
+        display: grid;
+        grid-template-columns: auto minmax(6rem, 14rem) auto 1fr auto;
+        align-items: start;
+        gap: 0.5rem;
+      }
+
+      .kv-row.has-error .key-input,
+      .value-input.invalid {
+        border-color: var(--danger);
+      }
+
+      .kv-reorder {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      button.icon {
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1;
+        padding: 0.2rem 0.35rem;
+      }
+
+      button.icon.danger:hover {
+        color: var(--danger);
+        border-color: var(--danger);
+      }
+
+      button.icon.reveal {
+        font-size: 13px;
+      }
+
+      .key-input,
+      .value-input {
+        width: 100%;
+        background: #0c0e13;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 0.4rem 0.55rem;
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+
+      .value-input.masked {
+        color: var(--muted);
+        letter-spacing: 0.1em;
+      }
+
+      .type-selector {
+        background: #0c0e13;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 12px;
+        padding: 0.4rem 0.3rem;
+      }
+
+      .value-cell {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+      }
+
+      .item-index {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 12px;
+        padding-top: 0.45rem;
+        min-width: 2.5rem;
+      }
+
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin: 0;
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--text);
+      }
+
+      .nested {
+        width: 100%;
+      }
+
+      button.nested-toggle {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 0.35rem 0.6rem;
+      }
+
+      .nested-body {
+        border-left: 1px solid var(--border);
+        margin: 0.5rem 0 0.25rem;
+        padding-left: 0.75rem;
+      }
+
+      button.kv-add {
+        align-self: flex-start;
+        font-size: 12px;
+        padding: 0.35rem 0.7rem;
+        margin-top: 0.3rem;
+      }
+
+      .kv-issues {
+        grid-column: 2 / -1;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        font-size: 12px;
+      }
+
+      .kv-issues li.error {
+        color: var(--danger);
+      }
+
+      .kv-issues li.warning {
+        color: var(--warn);
+      }
+
+      .raw-editor {
+        width: 100%;
+        min-height: 20rem;
+        resize: vertical;
+        background: #0c0e13;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 0.7rem;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .raw-editor.invalid {
+        border-color: var(--danger);
+      }
+
+      .raw-error {
+        margin-top: 0;
+      }
+
+      .raw-masked {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+      }
+
+      .validation {
+        margin-top: 1rem;
+        font-size: 13px;
+        border-left: 3px solid var(--border);
+        padding: 0.6rem 0.9rem;
+        border-radius: 0 6px 6px 0;
+        background: var(--panel);
+      }
+
+      .validation.ok {
+        border-left-color: var(--ok);
+        color: var(--muted);
+      }
+
+      .validation.warn {
+        border-left-color: var(--warn);
+      }
+
+      .validation.error {
+        border-left-color: var(--danger);
+      }
+
+      .validation-head {
+        margin: 0 0 0.4rem;
+        font-weight: 600;
+      }
+
+      .validation ul {
+        margin: 0;
+        padding-left: 1.1rem;
+      }
+
+      .validation li.error {
+        color: var(--danger);
+      }
+
+      .validation li.warning {
+        color: var(--warn);
+      }
+
+      .editor-foot {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.6rem;
+        margin-top: 1.25rem;
+      }
+
+      .foot-note {
+        font-size: 12px;
+        text-align: right;
+        margin: 0.5rem 0 0;
+      }
     </style>
   </head>
   <body>

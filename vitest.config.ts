@@ -8,7 +8,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     // O store local escreve em diretórios temporários; sem isolamento por
     // arquivo os testes de permissão disputariam o mesmo tmpdir.
     isolate: true,

@@ -1,5 +1,6 @@
 import { isAppError } from '../../domain/errors.js';
 import type { AppErrorCode } from '../../domain/errors.js';
+import { NO_STORE_HEADERS } from '../../infrastructure/http/noStore.js';
 
 /**
  * Fronteira HTTP: cabeçalhos e mapeamento de erro.
@@ -19,15 +20,10 @@ import type { AppErrorCode } from '../../domain/errors.js';
  * O arquivo tem prefixo `_` para o Astro não tratá-lo como rota.
  */
 
-/** Sem cache em disco, sem cache de proxy, sem armazenar no histórico. */
-export const NO_STORE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-  Pragma: 'no-cache',
-  Expires: '0',
-  // A resposta não deve ser reinterpretada nem embutida por outra origem.
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'no-referrer',
-});
+// Os cabeçalhos vêm de `infrastructure/http/noStore.ts`, que é a fonte única
+// compartilhada com o middleware. Reexportados aqui por conveniência das
+// rotas, que já importam deste módulo.
+export { NO_STORE_HEADERS };
 
 export interface ErrorBody {
   readonly error: {

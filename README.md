@@ -3,9 +3,10 @@
 Ferramenta web **local** para visualizar, validar e editar parâmetros JSON no AWS SSM Parameter
 Store. Roda na sua máquina, em loopback, e substitui a edição de JSON cru no console da AWS.
 
-> **Estado atual: Fase 1 concluída.** O app sobe, tem hot reload e lê parâmetros ponta a ponta pelo
-> `LocalFileStoreAdapter`. É **somente leitura** — o editor de chave-valor é a Fase 2 e o acesso ao
-> SSM real é a Fase 3. Veja [Roadmap](#roadmap).
+> **Estado atual: Fase 2a concluída.** O editor de chave-valor funciona com aninhamento, listas,
+> os seis tipos, validação e aba de JSON cru bidirecional, tudo no `LocalFileStoreAdapter`.
+> Ainda **não grava**: o save exige diff e proteção contra escrita concorrente, e os dois entram
+> na Fase 2b. O acesso ao SSM real é a Fase 3. Veja [Roadmap](#roadmap).
 
 ## Pré-requisitos
 
@@ -92,21 +93,62 @@ Ainda não se aplica: a Fase 1 não toca em conta AWS. Na Fase 3 os profiles ser
 Outras garantias implementadas:
 
 - O servidor faz bind em `127.0.0.1`, nunca em `0.0.0.0`.
-- Toda resposta da API sai com `Cache-Control: no-store`, para o browser não persistir valor em
-  cache de disco.
+- **Toda** resposta sai com `Cache-Control: no-store`, não só as de `/api/*`. A regra vive em
+  [src/middleware.ts](src/middleware.ts), um ponto único, porque a página do editor carrega o valor
+  do parâmetro embutido no HTML — no SSR e nos props da ilha React. Uma rota nova nasce coberta.
 - Erros são **redigidos por padrão**: só mensagens curadas no domínio atravessam a fronteira HTTP.
   Mensagem de erro de biblioteca, `cause` e stack trace nunca chegam ao browser nem ao log do
   servidor. Isso é testado com valor sentinela em
   [src/pages/api/\_http.test.ts](src/pages/api/_http.test.ts) — inclusive contra o vazamento por
   `JSON.parse`, cuja mensagem nativa embute um trecho do texto de entrada.
-- `SecureString` chega à UI mascarado, com botão explícito de revelar por campo.
-- Rascunho nunca é escrito em `localStorage` nem em arquivo temporário.
+- `Type` é propriedade do parâmetro inteiro, não das chaves. Em `SecureString`, **todos** os
+  valores entram mascarados, com "revelar tudo" global e revelar por linha. Nada é adivinhado por
+  nome de chave. Mascarar não é CSS: o valor real **não entra no atributo do input** até a
+  revelação, e o campo fica somente-leitura enquanto oculto — não se edita o que não se vê.
+- Todo input de valor passa por [um único componente](src/components/editor/ValueInput.tsx) que
+  aplica `autocomplete="off"`, `data-1p-ignore` e `data-lpignore`, para gerenciador de senha não se
+  oferecer. Nunca usa `type="password"` para mascarar, porque é exatamente o que dispara o
+  gerenciador. O teste verifica o HTML emitido, não os props.
+- Rascunho nunca é escrito em `localStorage`, cookie, query string nem arquivo temporário: vive só
+  no estado do React.
+
+## Por que o editor tem parser próprio de JSON
+
+`JSON.parse` perde três coisas que o spec exige preservar:
+
+```js
+JSON.parse('{"timeout": 30.0}')   // -> {timeout: 30}      perde int vs float
+JSON.parse('{"2":"b","1":"a"}')   // -> reordena as chaves  objeto JS ordena chave numérica
+JSON.parse('{"a":1,"a":2}')       // -> {a: 2}             perde a duplicata
+```
+
+Além disso, `Number('9007199254740993')` devolve `9007199254740992`: qualquer conversão para
+`number` corrompe inteiro acima de 2^53. Por isso **nenhum caminho do editor chama `Number`,
+`parseFloat` ou `parseInt` em um número de parâmetro** — o número é guardado como lexema de texto e
+validado por gramática, em [jsonNumber.ts](src/domain/json/jsonNumber.ts).
+
+O modelo em [src/domain/json/](src/domain/json/) guarda ainda o *span* de cada nó no texto de
+origem. Subárvore que não foi editada é reemitida **byte a byte** do original, o que faz duas
+promessas serem literais e não aproximadas:
+
+- Round-trip de um parâmetro sem alterações produz diff vazio.
+- Editar um campo não reformata os vizinhos — `{  "x":1,   "y":2  }` mantém o espaçamento torto,
+  `30.0` não vira `30`, e JSON minificado continua minificado depois de inserir campo.
+
+O que **é** reformatado: um container editado reemite seus separadores, usando o estilo detectado do
+próprio arquivo. Necessário porque inserir ou remover item muda quantos separadores existem.
 
 ## Limitações conhecidas
 
-- **Somente leitura.** Não há caminho de gravação exposto na UI: gravar sem diff violaria o
-  critério de "nunca salvar por acidente".
+- **Ainda não grava.** O botão Salvar existe desabilitado. Gravar sem diff e sem recheque de versão
+  violaria dois critérios de aceitação de uma vez; os dois entram na Fase 2b.
 - **Sem driver AWS.** `STORE_DRIVER=aws` falha com erro explícito.
+- **Reordenar é por botão sobe/desce**, não arrastar. Funciona por teclado e é testável.
+- **Painel aninhado começa fechado a partir do terceiro nível**, para a tela não explodir em
+  parâmetro grande. Abrir é um clique.
+- **Raiz que não é objeto nem lista** (um parâmetro cujo valor é só uma string, por exemplo) não
+  tem formulário de chave-valor: cai na aba JSON cru, com aviso.
+- **Chave terminada em `.meta`** é rejeitada no driver local, porque colidiria com o sidecar.
 - **`history()` no driver local** devolve apenas a versão atual. O store em arquivos não guarda
   versões anteriores; o histórico real vem dos backups (Fase 4) e do `GetParameterHistory`
   (Fase 3).
@@ -139,18 +181,28 @@ O contrato está em [src/infrastructure/store/ParameterStorePort.ts](src/infrast
 ## Roadmap
 
 - [x] **Fase 1** — scaffold Astro + React + mise, hot reload, `LocalFileStoreAdapter` ponta a ponta.
-- [ ] **Fase 2** — editor de chave-valor com aninhamento, arrays, tipos, validação e diff.
-- [ ] **Fase 3** — seletor de profiles, autenticação SSO, `AwsSsmStoreAdapter`, `SecureString`.
-- [ ] **Fase 4** — histórico, backup, testes de aceitação e documentação (`docs/architecture.md`,
-      `docs/iam-policy.json`).
+- [x] **Fase 2a** — editor de chave-valor com aninhamento, listas, tipos, validação, aba de JSON
+      cru bidirecional e mascaramento de `SecureString`. Sem gravação.
+- [ ] **Fase 2b** — diff estrutural por caminho, confirmação explícita, `PUT`, proteção contra lost
+      update com diff de três vias, e CSRF (`security.checkOrigin` + validação de Host).
+- [ ] **Fase 3** — seletor de profiles, autenticação SSO, `AwsSsmStoreAdapter`, `SecureString` real.
+      Backup e retenção entram aqui, **antes** do primeiro `PutParameter` contra a AWS.
+- [ ] **Fase 4** — histórico, fluxo de criação de parâmetro, testes restantes e documentação
+      (`docs/architecture.md`, `docs/iam-policy.json`).
 
-### Critérios de aceitação (a validar ao fim da Fase 4)
+### Critérios de aceitação
 
-- [ ] Abrir, editar e salvar um parâmetro em menos de 5 interações a partir da tela inicial.
+- [ ] A partir de sessão já autenticada, abrir, editar e salvar em menos de 5 interações.
 - [ ] Nunca salvar por acidente: toda gravação passa por diff + confirmação.
-- [ ] JSON aninhado de 3 níveis editável sem tocar em texto cru.
+- [x] JSON aninhado de 3 níveis editável sem tocar em texto cru.
 - [ ] Sessão SSO expirando no meio da edição não faz perder o que foi digitado.
 - [ ] Trocar de profile com rascunho pendente sempre pede confirmação.
-- [ ] Round-trip de um parâmetro sem alterações produz diff vazio.
-- [x] Erros da AWS aparecem com mensagem acionável, não com stack trace. *(mecanismo pronto na
-      Fase 1; os erros da AWS em si entram na Fase 3.)*
+- [x] Round-trip de um parâmetro sem alterações produz diff vazio. *(garantido pelo serializador
+      verbatim; o diff em si é da 2b.)*
+- [ ] Alteração externa entre carregar e salvar é sempre detectada, nunca sobrescrita.
+- [x] Parameter name inexistente nunca vira criação acidental. *(não existe caminho de gravação; o
+      fluxo explícito de criação é da Fase 4.)*
+- [x] Erros aparecem com mensagem acionável, não com stack trace. *(mecanismo pronto; os erros da
+      AWS em si entram na Fase 3.)*
+- [x] Compartilhar a tela com um parâmetro `SecureString` aberto não expõe valor sem ação
+      deliberada.
