@@ -22,10 +22,15 @@ import { pathKey } from '../../domain/json/jsonPath.js';
  * mesmo e daria vazio — escondendo exatamente a alteração que o usuário
  * acabou de fazer. `base.text` fica de fora dessa cadeia de propósito.
  *
- * `base.version` anda junto: é a versão lida no GET, e é ela que a Fase 2b
- * envia no save para detectar lost update. Base e versão precisam vir do
- * mesmo GET, senão a checagem de concorrência compara coisas de momentos
- * diferentes.
+ * `base.version` anda junto: é a versão lida no GET, e é ela que o save envia
+ * para detectar lost update. Base e versão precisam vir do mesmo GET, senão a
+ * checagem de concorrência compara coisas de momentos diferentes — por isso as
+ * duas só mudam juntas, e só nas três ações que representam uma carga nova:
+ * montagem, `REBASE` e `RELOAD`.
+ *
+ * Isso não afrouxa a invariante, delimita ela: a base nunca deriva do documento
+ * nem dos spans. Ela só muda quando o store foi lido de novo e o usuário
+ * decidiu adotar aquela leitura.
  *
  * ── Nada disso vai para disco ───────────────────────────────────────────────
  *
@@ -70,7 +75,17 @@ export type DraftAction =
   | { readonly type: 'SET_RAW'; readonly text: string }
   | { readonly type: 'TOGGLE_REVEAL_ALL' }
   | { readonly type: 'TOGGLE_REVEAL_PATH'; readonly path: EditPath }
-  | { readonly type: 'DISCARD' };
+  | { readonly type: 'DISCARD' }
+  /**
+   * Adota uma leitura nova do store como base, **mantendo** a minha edição.
+   *
+   * Usado depois de gravar com sucesso (a base passa a ser o que foi gravado,
+   * e o rascunho deixa de estar pendente) e ao rebasear sobre alteração
+   * externa.
+   */
+  | { readonly type: 'REBASE'; readonly text: string; readonly version: number }
+  /** Adota uma leitura nova do store e **descarta** a minha edição. */
+  | { readonly type: 'RELOAD'; readonly text: string; readonly version: number };
 
 /** Monta o estado inicial a partir do que o GET trouxe. */
 export function initialDraftState(loadedText: string, loadedVersion: number): DraftState {
@@ -144,6 +159,23 @@ export function draftReducer(state: DraftState, action: DraftAction): DraftState
         tab: state.content.kind === 'rawInvalid' ? state.tab : 'structured',
       };
     }
+
+    case 'REBASE': {
+      // Texto e versão sempre juntos: uma base com a versão de outro momento
+      // faria a checagem de concorrência comparar coisas diferentes.
+      return { ...state, base: { text: action.text, version: action.version } };
+    }
+
+    case 'RELOAD': {
+      return {
+        ...state,
+        base: { text: action.text, version: action.version },
+        content: contentFromText(action.text),
+        // Revelação cai junto: é leitura nova, começa oculta.
+        revealAll: false,
+        revealedPaths: new Set(),
+      };
+    }
   }
 }
 
@@ -154,6 +186,15 @@ export interface UseParameterDraft {
   /** `true` quando o texto atual difere da base. Comparação textual direta. */
   readonly isDirty: boolean;
   readonly canUseStructuredTab: boolean;
+  /**
+   * A base parseada, para o diff.
+   *
+   * `undefined` quando o valor carregado do store não é JSON — aí não existe
+   * diff estrutural possível e a UI avisa em vez de inventar.
+   */
+  readonly baseDocument: JsonDocument | undefined;
+  readonly rebase: (text: string, version: number) => void;
+  readonly reload: (text: string, version: number) => void;
   readonly selectTab: (tab: DraftTab) => void;
   readonly edit: (apply: (document: JsonDocument) => JsonDocument) => void;
   readonly setRaw: (text: string) => void;
@@ -177,6 +218,11 @@ export function useParameterDraft(
 
   const currentText = useMemo(() => draftText(state), [state]);
 
+  const baseDocument = useMemo(() => {
+    const parsed = parseJsonDocument(state.base.text);
+    return parsed.ok ? parsed.document : undefined;
+  }, [state.base.text]);
+
   const isRevealed = useCallback(
     (path: EditPath) => {
       // Parâmetro que não é SecureString não tem nada a mascarar.
@@ -193,6 +239,15 @@ export function useParameterDraft(
     currentText,
     isDirty: currentText !== state.base.text,
     canUseStructuredTab: state.content.kind === 'structured',
+    baseDocument,
+    rebase: useCallback(
+      (text: string, version: number) => dispatch({ type: 'REBASE', text, version }),
+      [],
+    ),
+    reload: useCallback(
+      (text: string, version: number) => dispatch({ type: 'RELOAD', text, version }),
+      [],
+    ),
     selectTab: useCallback((tab: DraftTab) => dispatch({ type: 'SELECT_TAB', tab }), []),
     edit: useCallback(
       (apply: (document: JsonDocument) => JsonDocument) => dispatch({ type: 'EDIT', apply }),

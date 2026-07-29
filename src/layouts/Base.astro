@@ -2,9 +2,11 @@
 interface Props {
   title: string;
   driver: string;
+  /** Profile em uso, quando o driver é `aws`. Nome de profile não é segredo. */
+  profileName?: string | undefined;
 }
 
-const { title, driver } = Astro.props;
+const { title, driver, profileName } = Astro.props;
 ---
 
 <!doctype html>
@@ -472,12 +474,287 @@ const { title, driver } = Astro.props;
         text-align: right;
         margin: 0.5rem 0 0;
       }
+
+      /* ── diff e conflito ──────────────────────────────────────────────── */
+
+      .notice.success {
+        border-left: 3px solid var(--ok);
+        background: #101a14;
+        padding: 0.7rem 0.9rem;
+        border-radius: 0 6px 6px 0;
+        font-size: 13px;
+      }
+
+      .review-title {
+        font-size: 1rem;
+        margin: 0 0 0.75rem;
+      }
+
+      .diff-summary,
+      .diff-empty {
+        font-size: 13px;
+        color: var(--muted);
+        margin: 0 0 0.75rem;
+      }
+
+      .diff-formatting {
+        margin: 0;
+      }
+
+      .diff-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .diff-row {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.5rem 0.7rem;
+      }
+
+      .diff-row.added {
+        border-left: 3px solid var(--ok);
+      }
+
+      .diff-row.removed {
+        border-left: 3px solid var(--danger);
+      }
+
+      .diff-row.changed {
+        border-left: 3px solid var(--accent);
+      }
+
+      .diff-row.moved {
+        border-left: 3px solid var(--warn);
+      }
+
+      .diff-head {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .diff-tag {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+      }
+
+      .diff-tag.added {
+        color: var(--ok);
+      }
+      .diff-tag.removed {
+        color: var(--danger);
+      }
+      .diff-tag.changed {
+        color: var(--accent);
+      }
+      .diff-tag.moved {
+        color: var(--warn);
+      }
+
+      .diff-path {
+        font-size: 13px;
+        word-break: break-all;
+      }
+
+      .diff-values {
+        margin-top: 0.35rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+      }
+
+      .diff-value,
+      .diff-moved {
+        margin: 0;
+        font-family: var(--mono);
+        font-size: 12px;
+        display: flex;
+        gap: 0.5rem;
+        align-items: baseline;
+      }
+
+      .diff-moved {
+        color: var(--warn);
+        margin-top: 0.35rem;
+      }
+
+      .diff-sign {
+        width: 1ch;
+        color: var(--muted);
+      }
+
+      .diff-value.before .diff-sign {
+        color: var(--danger);
+      }
+      .diff-value.after .diff-sign {
+        color: var(--ok);
+      }
+
+      .diff-kind {
+        color: var(--muted);
+        font-size: 11px;
+        min-width: 4.5rem;
+      }
+
+      .diff-text {
+        word-break: break-all;
+        white-space: pre-wrap;
+      }
+
+      .review-actions,
+      .conflict-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.6rem;
+        margin-top: 1.25rem;
+        flex-wrap: wrap;
+      }
+
+      .review-note,
+      .conflict-hint,
+      .conflict-note {
+        font-size: 12px;
+        margin: 0.75rem 0 0;
+      }
+
+      button.danger-action {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+
+      .three-way {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        margin-top: 0.75rem;
+        display: block;
+        overflow-x: auto;
+      }
+
+      .three-way th,
+      .three-way td {
+        border: 1px solid var(--border);
+        padding: 0.4rem 0.5rem;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .three-way th {
+        color: var(--muted);
+        font-weight: 500;
+        white-space: nowrap;
+      }
+
+      .three-way-row.both {
+        background: #1f1315;
+      }
+
+      .side-tag {
+        display: inline-block;
+        margin-left: 0.4rem;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+      }
+
+      .side-tag.both {
+        color: var(--danger);
+      }
+      .side-tag.theirs {
+        color: var(--warn);
+      }
+      .side-tag.mine {
+        color: var(--accent);
+      }
+
+      /* ── seletor de profile e tela inicial ────────────────────────────── */
+
+      .topbar-meta {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .profile-selector label {
+        margin-bottom: 0.35rem;
+      }
+
+      .profile-select {
+        width: 100%;
+        font-family: var(--mono);
+        font-size: 13px;
+        padding: 0.5rem;
+      }
+
+      .profile-detail {
+        margin-top: 0.75rem;
+      }
+
+      .badge.session-ok {
+        border-color: var(--ok);
+        color: var(--ok);
+      }
+
+      .badge.session-bad {
+        border-color: var(--warn);
+        color: var(--warn);
+      }
+
+      .profile-login {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.6rem;
+        margin-top: 0.5rem;
+      }
+
+      .profile-login p {
+        margin: 0;
+        font-size: 13px;
+      }
+
+      .row {
+        display: flex;
+        gap: 0.6rem;
+      }
+
+      .hint {
+        margin: 0.6rem 0 0;
+        font-size: 12px;
+      }
+
+      .list-meta {
+        font-size: 12px;
+      }
+
+      .foot-notice {
+        margin-top: 1rem;
+        font-size: 13px;
+      }
     </style>
   </head>
   <body>
     <header class="topbar">
       <span class="brand">SSM Config Panel</span>
-      <span class="badge">driver <strong>{driver}</strong></span>
+      <span class="topbar-meta">
+        {
+          profileName && (
+            <span class="badge">
+              profile <strong>{profileName}</strong>
+            </span>
+          )
+        }
+        <span class="badge">driver <strong>{driver}</strong></span>
+      </span>
     </header>
     <main>
       <slot />

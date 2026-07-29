@@ -3,44 +3,73 @@ import Base from '../../layouts/Base.astro';
 import ParameterEditor from '../../components/editor/ParameterEditor.tsx';
 import { GetParameterUseCase } from '../../application/GetParameterUseCase.js';
 import type { GetParameterResult } from '../../application/GetParameterUseCase.js';
-import { getParameterStore, resolveDriver } from '../../infrastructure/store/index.js';
+import { storeContextFromUrl } from '../../infrastructure/http/storeContext.js';
+import { resolveDriver, resolveParameterStore } from '../../infrastructure/store/index.js';
 import { isAppError } from '../../domain/errors.js';
 
 export const prerender = false;
 
 const driver = resolveDriver();
+const context = storeContextFromUrl(Astro.url);
 const routeName = Astro.params.name ?? '';
 const name = routeName.startsWith('/') ? routeName : `/${routeName}`;
 
 let parameter: GetParameterResult | undefined;
 let loadError: string | undefined;
+let loadErrorCode: string | undefined;
 
 try {
-  parameter = await new GetParameterUseCase(getParameterStore()).execute(name);
+  const store = await resolveParameterStore(context);
+  parameter = await new GetParameterUseCase(store).execute(name);
 } catch (error) {
-  // Mesma política da fronteira HTTP: só mensagem curada atravessa.
+  // Mesma política da fronteira HTTP: só mensagem curada atravessa. O código
+  // estável permite a página diferenciar sessão expirada de erro de verdade.
   loadError = isAppError(error)
     ? error.publicMessage
     : 'Não foi possível ler o parâmetro. Consulte o terminal do servidor.';
+  loadErrorCode = isAppError(error) ? error.code : undefined;
 }
+
+const homeLink = context.profileName === undefined
+  ? '/'
+  : `/?profile=${encodeURIComponent(context.profileName)}`;
 ---
 
-<Base title={name} driver={driver}>
-  <p class="back-link"><a href="/">← Todos os parâmetros</a></p>
+<Base title={name} driver={driver} profileName={context.profileName}>
+  <p class="back-link"><a href={homeLink}>← Todos os parâmetros</a></p>
 
   {
     loadError ? (
       <>
         <h1 class="param-name">{name}</h1>
         <p class="notice error">{loadError}</p>
-        <p class="muted">
-          Parâmetro inexistente não vira criação implícita. Criar é fluxo separado e explícito,
-          com escolha consciente de <code>Type</code>, <code>Tier</code> e <code>KeyId</code> — e
-          entra na Fase 4.
-        </p>
+
+        {loadErrorCode === 'PROFILE_NOT_AUTHENTICATED' && (
+          <p class="muted">
+            Volte para a <a href={homeLink}>tela inicial</a> e autentique o profile. Nesta página
+            ainda não havia rascunho para perder.
+          </p>
+        )}
+
+        {loadErrorCode === 'PARAMETER_NOT_FOUND' && (
+          <p class="muted">
+            Parâmetro inexistente não vira criação implícita. Criar é fluxo separado e explícito,
+            com escolha consciente de <code>Type</code>, <code>Tier</code> e <code>KeyId</code> — e
+            está fora do escopo por decisão sua.
+          </p>
+        )}
+
+        {loadErrorCode === 'WRITE_NOT_ENABLED' && (
+          <p class="muted">A escrita entra junto com o backup local.</p>
+        )}
       </>
     ) : (
-      <ParameterEditor parameter={parameter!} client:load />
+      <ParameterEditor
+        parameter={parameter!}
+        profileName={context.profileName}
+        readOnly={driver === 'aws'}
+        client:load
+      />
     )
   }
 </Base>

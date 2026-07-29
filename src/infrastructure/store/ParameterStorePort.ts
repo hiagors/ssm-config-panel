@@ -34,12 +34,19 @@ export interface ParameterStorePort {
   get(name: string): Promise<Parameter>;
 
   /**
-   * Grava um novo valor, sobrescrevendo (`Overwrite: true`).
+   * Grava um novo valor.
    *
    * O chamador é responsável por passar `type`, `tier` e `keyId` iguais aos
    * do parâmetro original — preservá-los é requisito, não opção.
    *
+   * `options.expectedVersion` é obrigatório e é o que impede as duas formas de
+   * escrita acidental. Ver `PutOptions`.
+   *
    * @returns o número da versão resultante.
+   * @throws {ParameterNotFoundError} quando se esperava uma versão e o
+   *         parâmetro não existe.
+   * @throws {VersionMismatchError} quando a versão atual não é a esperada.
+   * @throws {ParameterAlreadyExistsError} quando se esperava criar e já existe.
    */
   put(name: string, value: string, options: PutOptions): Promise<PutResult>;
 
@@ -54,12 +61,35 @@ export interface ListOptions {
   readonly recursive?: boolean | undefined;
 }
 
+/** Sentinela de `expectedVersion` para "espero que o parâmetro não exista". */
+export const EXPECT_NEW_PARAMETER = 0;
+
 export interface PutOptions {
   readonly type: ParameterType;
   readonly tier: ParameterTier;
   /** Obrigatório quando `type` é `SecureString`; ignorado nos outros casos. */
   readonly keyId?: string | undefined;
   readonly description?: string | undefined;
+  /**
+   * Versão que o chamador leu e da qual a edição partiu.
+   *
+   * Obrigatório de propósito. É o campo que torna estruturais as duas regras
+   * que o spec exige, em vez de deixá-las como disciplina de quem chama:
+   *
+   * - **Nunca sobrescrever às cegas.** O SSM não tem put condicional, mas
+   *   devolve `Version`. O adapter compara antes de gravar e aborta se a
+   *   versão mudou, então uma gravação de outra pessoa não é perdida.
+   *
+   * - **Nunca criar por efeito colateral.** `PutParameter` com
+   *   `Overwrite: true` cria o parâmetro se ele não existir, e nesse caso não
+   *   há original de onde herdar `Type`, `Tier` e `KeyId`. Com
+   *   `expectedVersion >= 1` o adapter exige que o parâmetro exista.
+   *
+   * Use `EXPECT_NEW_PARAMETER` (0) para criação deliberada — o fluxo explícito
+   * de criação é da Fase 4. Passar 0 sem querer é bem mais difícil do que
+   * esquecer de checar a versão.
+   */
+  readonly expectedVersion: number;
 }
 
 export interface PutResult {

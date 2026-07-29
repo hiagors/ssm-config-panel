@@ -10,7 +10,13 @@ import type {
   ParameterType,
 } from '../../domain/Parameter.js';
 import { PARAMETER_TIERS, PARAMETER_TYPES } from '../../domain/Parameter.js';
-import { ParameterNotFoundError, StoreUnavailableError, isAppError } from '../../domain/errors.js';
+import {
+  ParameterAlreadyExistsError,
+  ParameterNotFoundError,
+  StoreUnavailableError,
+  VersionMismatchError,
+  isAppError,
+} from '../../domain/errors.js';
 import { parseParameterName } from '../../domain/parameterName.js';
 import type {
   ListOptions,
@@ -18,6 +24,7 @@ import type {
   PutOptions,
   PutResult,
 } from './ParameterStorePort.js';
+import { EXPECT_NEW_PARAMETER } from './ParameterStorePort.js';
 import {
   META_SUFFIX,
   isMetaFile,
@@ -92,6 +99,13 @@ export class LocalFileStoreAdapter implements ParameterStorePort {
     const { path, exists } = await this.resolveValuePath(parameterName);
 
     const previous = exists ? await this.readMetadata(parameterName, path) : undefined;
+
+    // A checagem de versão fica aqui, o mais perto possível da escrita, e não
+    // só no use case. Não elimina a janela entre ler e gravar — o sistema de
+    // arquivos não dá compare-and-swap — mas a reduz ao mínimo e vale para
+    // qualquer chamador do port, não só para o caminho que eu escrevi.
+    this.assertExpectedVersion(parameterName, options.expectedVersion, previous?.version);
+
     const version = (previous?.version ?? 0) + 1;
 
     const metadata: ParameterMetadata = {
@@ -124,6 +138,35 @@ export class LocalFileStoreAdapter implements ParameterStorePort {
   async history(name: string): Promise<ParameterHistoryEntry[]> {
     const current = await this.get(name);
     return [{ metadata: current.metadata, value: current.value }];
+  }
+
+  /**
+   * Aplica o contrato de `PutOptions.expectedVersion`.
+   *
+   * `0` significa "espero criar"; `>= 1` significa "espero sobrescrever esta
+   * versão exata". Qualquer divergência aborta antes de tocar no disco.
+   */
+  private assertExpectedVersion(
+    parameterName: string,
+    expectedVersion: number,
+    currentVersion: number | undefined,
+  ): void {
+    if (expectedVersion === EXPECT_NEW_PARAMETER) {
+      if (currentVersion !== undefined) {
+        throw new ParameterAlreadyExistsError(parameterName, currentVersion);
+      }
+      return;
+    }
+
+    if (currentVersion === undefined) {
+      // `PutParameter` com `Overwrite: true` criaria aqui. Não criamos: sem
+      // original não há `Type`, `Tier` nem `KeyId` de onde herdar.
+      throw new ParameterNotFoundError(parameterName);
+    }
+
+    if (currentVersion !== expectedVersion) {
+      throw new VersionMismatchError(parameterName, expectedVersion, currentVersion);
+    }
   }
 
   /** Resolve exigindo caixa exata; lança em colisão de case-insensitivity. */

@@ -17,6 +17,7 @@ import { serializeJsonDocument } from '../../domain/json/serializeJsonDocument.j
 export type ValidationSeverity = 'error' | 'warning';
 
 export type ValidationCode =
+  | 'INVALID_JSON'
   | 'EMPTY_KEY'
   | 'DUPLICATE_KEY'
   | 'INVALID_NUMBER'

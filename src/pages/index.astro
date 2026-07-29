@@ -1,103 +1,88 @@
 ---
 import Base from '../layouts/Base.astro';
+import HomeControls from '../components/HomeControls.tsx';
 import { ListParametersUseCase } from '../application/ListParametersUseCase.js';
-import { getParameterStore, resolveDriver } from '../infrastructure/store/index.js';
+import { ListProfilesUseCase } from '../application/ListProfilesUseCase.js';
+import {
+  getSsoAuth,
+  preselectedProfileName,
+  resolveDriver,
+  resolveParameterStore,
+} from '../infrastructure/store/index.js';
 import { isAppError } from '../domain/errors.js';
 import type { ParameterMetadata } from '../domain/Parameter.js';
+import type { AwsProfile } from '../domain/AwsProfile.js';
 
 export const prerender = false;
 
 const driver = resolveDriver();
 
-let parameters: ParameterMetadata[] = [];
-let listError: string | undefined;
+/**
+ * A tela inicial muda de forma conforme o driver.
+ *
+ * No local, listar tudo é barato e útil. No `aws`, é preciso escolher profile
+ * e buscar por prefixo — `DescribeParameters` numa conta de produção é paginado
+ * e sujeito a throttling. Renderizar a lista completa no SSR faria a página
+ * inicial esperar por uma varredura.
+ */
+let profiles: AwsProfile[] = [];
+let profilesError: string | undefined;
+let preselected: string | undefined;
 
-try {
-  parameters = await new ListParametersUseCase(getParameterStore()).execute();
-} catch (error) {
-  // A mesma política da fronteira HTTP vale aqui: só mensagem curada.
-  listError = isAppError(error)
-    ? error.publicMessage
-    : 'Não foi possível listar os parâmetros. Consulte o terminal do servidor.';
+if (driver === 'aws') {
+  try {
+    const result = await new ListProfilesUseCase(getSsoAuth()).execute(preselectedProfileName());
+    profiles = [...result.profiles];
+    preselected = result.preselected;
+  } catch (error) {
+    profilesError = isAppError(error)
+      ? error.publicMessage
+      : 'Não foi possível ler os profiles de ~/.aws/config.';
+  }
+}
+
+let localParameters: ParameterMetadata[] = [];
+let localListError: string | undefined;
+
+if (driver === 'local') {
+  try {
+    const store = await resolveParameterStore({ driver, profileName: undefined });
+    localParameters = await new ListParametersUseCase(store).execute();
+  } catch (error) {
+    localListError = isAppError(error)
+      ? error.publicMessage
+      : 'Não foi possível listar os parâmetros.';
+  }
 }
 ---
 
 <Base title="Parâmetros" driver={driver}>
   <h1>Parâmetros</h1>
   <p class="muted">
-    Informe o name de um parâmetro ou escolha um da lista. Requisito mínimo da Fase 1: leitura ponta
-    a ponta pelo driver <code>{driver}</code>.
+    {
+      driver === 'aws'
+        ? 'Escolha o profile, garanta a sessão válida e abra um parâmetro pelo name ou pela busca por prefixo.'
+        : 'Informe o name de um parâmetro ou escolha um da lista do store local.'
+    }
   </p>
 
-  <div class="panel" style="margin-top: 1.25rem;">
-    <form method="get" action="/parameters" id="open-form">
-      <label for="name">Name do parameter</label>
-      <div style="display: flex; gap: 0.6rem;">
-        <input
-          type="text"
-          id="name"
-          name="name"
-          placeholder="/example/demo/env"
-          autocomplete="off"
-          spellcheck="false"
-          required
-        />
-        <button type="submit">Abrir</button>
-      </div>
-      <p class="muted" style="margin: 0.6rem 0 0; font-size: 12px;">
-        Precisa começar com <code>/</code>. Letras, números, ponto, hífen e underscore.
-      </p>
-    </form>
-  </div>
-
-  <h2 style="font-size: 1.05rem; margin: 2rem 0 0.75rem;">
-    No store local
-    <span class="muted" style="font-weight: 400;">({parameters.length})</span>
-  </h2>
-
-  {listError && <p class="notice error">{listError}</p>}
+  {profilesError && <p class="notice error">{profilesError}</p>}
 
   {
-    !listError && parameters.length === 0 && (
+    driver === 'aws' && (
       <p class="notice">
-        O store local está vazio. Rode <code>make seed</code> para criar o parâmetro de exemplo{' '}
-        <code>/example/demo/env</code>.
+        <strong>Somente leitura.</strong> O adapter da AWS não grava ainda — a escrita entra junto
+        com o backup local, para que nenhuma gravação em conta real aconteça sem rede de proteção.
       </p>
     )
   }
 
-  {
-    parameters.length > 0 && (
-      <div class="panel">
-        <ul class="parameters">
-          {parameters.map((parameter) => (
-            <li>
-              <a href={`/parameters${parameter.name}`}>{parameter.name}</a>
-              <span class="muted" style="font-size: 12px;">
-                {parameter.type} · {parameter.tier} · v{parameter.version}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    )
-  }
+  <HomeControls
+    driver={driver}
+    initialProfiles={profiles}
+    initialPreselected={preselected}
+    localParameters={localParameters}
+    localListError={localListError}
+    client:load
+  />
 </Base>
-
-<script>
-  // O formulário usa GET para /parameters?name=…, mas a rota canônica é
-  // /parameters/<name>. Traduzimos no cliente para a URL ficar limpa e
-  // compartilhável, sem o name aparecer em query string.
-  const form = document.getElementById('open-form') as HTMLFormElement | null;
-
-  form?.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const input = form.elements.namedItem('name') as HTMLInputElement | null;
-    const raw = input?.value.trim() ?? '';
-    if (raw === '') {
-      return;
-    }
-    const normalized = raw.startsWith('/') ? raw : `/${raw}`;
-    window.location.href = `/parameters${normalized}`;
-  });
-</script>

@@ -62,7 +62,19 @@ export function isSecret(metadata: ParameterMetadata): boolean {
   return metadata.type === 'SecureString';
 }
 
-/** Tamanho do valor em bytes UTF-8, que é como o SSM conta o limite do tier. */
+/**
+ * Reaproveitado entre chamadas: o editor recalcula o tamanho a cada tecla.
+ */
+const utf8Encoder = new TextEncoder();
+
+/**
+ * Tamanho do valor em bytes UTF-8, que é como o SSM conta o limite do tier.
+ *
+ * Usa `TextEncoder`, não `Buffer.byteLength`. Este módulo é `domain/`, e
+ * `domain/` é alcançado pela ilha React — a validação roda no browser a cada
+ * tecla, e `Buffer` só existe no Node. Nada em `domain/` pode depender de API
+ * exclusiva de um dos dois ambientes.
+ */
 export function valueSizeInBytes(value: string): number {
-  return Buffer.byteLength(value, 'utf8');
+  return utf8Encoder.encode(value).length;
 }

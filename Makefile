@@ -10,7 +10,7 @@ MISE  := mise
 RUN   := $(MISE) exec --
 
 .DEFAULT_GOAL := help
-.PHONY: help setup check-deps dev test test-watch lint build start seed clean
+.PHONY: help setup check-deps dev dev-aws test test-watch lint build start seed clean
 
 help: ## Lista os alvos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -37,6 +37,9 @@ check-deps: ## Verifica que mise, Node e aws v2 vêm do diretório do mise
 
 dev: ## Sobe o servidor de desenvolvimento com hot reload em 127.0.0.1
 	$(RUN) npm run dev
+
+dev-aws: ## Como dev, mas contra o SSM real (somente leitura nesta fase)
+	STORE_DRIVER=aws $(RUN) npm run dev
 
 test: ## Roda os testes unitários
 	$(RUN) npm run test
