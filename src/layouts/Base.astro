@@ -1,0 +1,202 @@
+---
+interface Props {
+  title: string;
+  driver: string;
+}
+
+const { title, driver } = Astro.props;
+---
+
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Ferramenta local: nada aqui deve ser indexado nem pré-carregado. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <title>{title} — SSM Config Panel</title>
+    <style is:global>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --border: #2a2f3a;
+        --text: #e6e8ec;
+        --muted: #9aa3b2;
+        --accent: #5aa9ff;
+        --danger: #ff6b6b;
+        --ok: #4ade80;
+        --warn: #fbbf24;
+        --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 2rem 1.5rem 4rem;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      h1 {
+        font-size: 1.4rem;
+        margin: 0 0 0.25rem;
+      }
+
+      code,
+      pre {
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        border-bottom: 1px solid var(--border);
+        padding: 0.75rem 1.5rem;
+        background: var(--panel);
+      }
+
+      .brand {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0.15rem 0.6rem;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .badge strong {
+        color: var(--text);
+        font-family: var(--mono);
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1.25rem;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+
+      input[type='text'],
+      textarea {
+        width: 100%;
+        background: #0c0e13;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        padding: 0.55rem 0.7rem;
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+
+      input[type='text']:focus,
+      textarea:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+      }
+
+      button {
+        background: var(--accent);
+        border: 0;
+        border-radius: 6px;
+        color: #06121f;
+        cursor: pointer;
+        font-weight: 600;
+        padding: 0.55rem 0.9rem;
+      }
+
+      button.secondary {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+        font-weight: 500;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      ul.parameters {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      ul.parameters li {
+        border-top: 1px solid var(--border);
+        padding: 0.6rem 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      ul.parameters li:first-child {
+        border-top: 0;
+      }
+
+      ul.parameters a {
+        font-family: var(--mono);
+        font-size: 13px;
+        text-decoration: none;
+      }
+
+      .notice {
+        border-left: 3px solid var(--warn);
+        background: #1d1a12;
+        padding: 0.7rem 0.9rem;
+        border-radius: 0 6px 6px 0;
+        font-size: 13px;
+      }
+
+      .notice.error {
+        border-left-color: var(--danger);
+        background: #1f1315;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <span class="brand">SSM Config Panel</span>
+      <span class="badge">driver <strong>{driver}</strong></span>
+    </header>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>

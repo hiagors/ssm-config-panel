@@ -1,0 +1,6 @@
+[tools]
+node = "24.18.0"
+# Pinned by explicit backend instead of the `aws-cli` short name: the mise
+# registry has renamed this tool before, and `aqua:aws/aws-cli` is stable.
+# On macOS the aqua package extracts `aws` from the official AWSCLIV2 .pkg.
+"aqua:aws/aws-cli" = "2.36.10"

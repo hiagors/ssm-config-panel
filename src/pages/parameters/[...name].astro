@@ -1,0 +1,40 @@
+---
+import Base from '../../layouts/Base.astro';
+import ParameterViewer from '../../components/ParameterViewer.tsx';
+import { GetParameterUseCase } from '../../application/GetParameterUseCase.js';
+import type { GetParameterResult } from '../../application/GetParameterUseCase.js';
+import { getParameterStore, resolveDriver } from '../../infrastructure/store/index.js';
+import { isAppError } from '../../domain/errors.js';
+
+export const prerender = false;
+
+const driver = resolveDriver();
+const routeName = Astro.params.name ?? '';
+const name = routeName.startsWith('/') ? routeName : `/${routeName}`;
+
+let parameter: GetParameterResult | undefined;
+let loadError: string | undefined;
+
+try {
+  parameter = await new GetParameterUseCase(getParameterStore()).execute(name);
+} catch (error) {
+  loadError = isAppError(error)
+    ? error.publicMessage
+    : 'Não foi possível ler o parâmetro. Consulte o terminal do servidor.';
+}
+---
+
+<Base title={name} driver={driver}>
+  <p style="margin: 0 0 0.5rem;"><a href="/">← Todos os parâmetros</a></p>
+
+  {
+    loadError ? (
+      <>
+        <h1 style="font-family: var(--mono); font-size: 1.05rem;">{name}</h1>
+        <p class="notice error">{loadError}</p>
+      </>
+    ) : (
+      <ParameterViewer parameter={parameter!} client:load />
+    )
+  }
+</Base>

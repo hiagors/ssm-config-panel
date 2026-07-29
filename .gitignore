@@ -1,0 +1,125 @@
+# Backups de versões anteriores de parâmetros (inclui SecureString decriptado)
+.backups/
+
+# Store local do LocalFileStoreAdapter (espelha valores reais do SSM)
+.local-store/
+
+# Variáveis de ambiente locais (STORE_DRIVER, AWS_PROFILE, AWS_REGION, etc.)
+.env
+.env.*
+!.env.example
+
+# Configuração e credenciais AWS que por acidente sejam copiadas para o repo
+.aws/
+aws-config
+aws-credentials
+credentials
+config.ini
+
+# Chaves e certificados
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+
+# Dumps, exports e rascunhos com dados reais de parâmetros
+*.dump
+*.bak
+parameters-*.json
+export-*.json
+scratch/
+tmp/
+temp/
+
+# Evidências visuais que podem expor account ID, ARN, profile ou nome de sistema
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mov
+*.mp4
+!docs/assets/**
+
+# ─────────────────────────────────────────────────────────────
+# NODE / ASTRO
+# ─────────────────────────────────────────────────────────────
+
+node_modules/
+dist/
+.astro/
+.output/
+.vercel/
+.netlify/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+
+# Cache de build e ferramentas
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# Testes
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# ─────────────────────────────────────────────────────────────
+# MISE / TOOLING
+# ─────────────────────────────────────────────────────────────
+
+# mise.toml É versionado (pina Node e awscli).
+# Apenas overrides locais ficam de fora:
+mise.local.toml
+.mise.local.toml
+.mise/
+
+# ─────────────────────────────────────────────────────────────
+# SISTEMA OPERACIONAL (macOS)
+# ─────────────────────────────────────────────────────────────
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Icon
+Thumbs.db
+desktop.ini
+
+# ─────────────────────────────────────────────────────────────
+# EDITORES E IA
+# ─────────────────────────────────────────────────────────────
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.swp
+*.swo
+*~
+.zed/
+
+# Claude Code: CLAUDE.md É versionado (convenções do projeto).
+# Estado local de sessão, não:
+.claude/
+.claude-local/
+CLAUDE.local.md
