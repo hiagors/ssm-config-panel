@@ -1,12 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { ForbiddenOriginError } from '../../domain/errors.js';
-import {
-  assertRequestIsTrusted,
-  checkRequestIsTrusted,
-  originPolicyFromEnvironment,
-} from './csrf.js';
+import { assertRequestIsTrusted, originPolicyFromEnvironment } from './csrf.js';
 
 const POLICY = { port: 4321 };
+
+/** Motivo da recusa, para asserção sobre o texto que chega ao usuário. */
+function reasonFor(request: Request): string {
+  try {
+    assertRequestIsTrusted(request, POLICY);
+    throw new Error('esperava recusa');
+  } catch (error) {
+    if (error instanceof ForbiddenOriginError) {
+      return error.reason;
+    }
+    throw error;
+  }
+}
 
 function request(
   method: string,
@@ -58,22 +67,21 @@ describe('DNS rebinding', () => {
     expect(() => assertRequestIsTrusted(bare, POLICY)).toThrow(ForbiddenOriginError);
   });
 
-  it('recusa Host de outra porta', () => {
+  it('a porta do Host não é checada: o hostname é que decide', () => {
+    // A requisição chegou nesta porta seja o que o cabeçalho disser, então
+    // comparar a porta do Host não defende de nada. O que defende é o hostname:
+    // em DNS rebinding ele chega como o domínio do atacante.
     expect(() =>
       assertRequestIsTrusted(request('GET', { host: '127.0.0.1:9999' }), POLICY),
-    ).toThrow(ForbiddenOriginError);
+    ).not.toThrow();
   });
 
   it('a mensagem não reflete o Host recebido', () => {
     // Não devolvemos texto do atacante numa página de erro.
-    const result = checkRequestIsTrusted(
-      request('GET', { host: 'evil-<script>-com' }),
-      POLICY,
-    );
+    const reason = reasonFor(request('GET', { host: 'evil-<script>-com' }));
 
-    expect(result.trusted).toBe(false);
-    expect(result.trusted === false && result.reason).not.toContain('evil');
-    expect(result.trusted === false && result.reason).toContain('DNS rebinding');
+    expect(reason).not.toContain('evil');
+    expect(reason).toContain('DNS rebinding');
   });
 });
 
@@ -133,30 +141,21 @@ describe('CSRF em requisição de escrita', () => {
     ).toThrow(ForbiddenOriginError);
   });
 
-  it('recusa quando Sec-Fetch-Site diz cross-site', () => {
+  it('Origin de outro site é recusado mesmo com Sec-Fetch-Site amigável', () => {
+    // A checagem de `Sec-Fetch-Site` saiu porque `Origin` já responde a mesma
+    // pergunta, e um cabeçalho que só alguns clientes enviam não pode ser o que
+    // decide. Um atacante que forjasse `Sec-Fetch-Site: same-origin` ainda cai
+    // aqui.
     expect(() =>
       assertRequestIsTrusted(
         request('PUT', {
           host: '127.0.0.1:4321',
-          origin: 'http://127.0.0.1:4321',
-          'sec-fetch-site': 'cross-site',
-        }),
-        POLICY,
-      ),
-    ).toThrow(ForbiddenOriginError);
-  });
-
-  it('aceita Sec-Fetch-Site same-origin', () => {
-    expect(() =>
-      assertRequestIsTrusted(
-        request('PUT', {
-          host: '127.0.0.1:4321',
-          origin: 'http://127.0.0.1:4321',
+          origin: 'https://evil.com',
           'sec-fetch-site': 'same-origin',
         }),
         POLICY,
       ),
-    ).not.toThrow();
+    ).toThrow(ForbiddenOriginError);
   });
 
   it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('%s exige Origin', (method) => {

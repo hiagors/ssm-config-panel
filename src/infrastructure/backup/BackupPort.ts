@@ -1,7 +1,7 @@
 import type { ParameterMetadata } from '../../domain/Parameter.js';
 
 /**
- * Rede de proteção antes de gravar.
+ * Rede de proteção antes de gravar, e origem do rollback.
  *
  * Existe para que nenhuma escrita — em SSM real ou no store local — aconteça sem
  * uma cópia da versão anterior em disco. É o único ponto do desenho que guarda
@@ -11,6 +11,10 @@ import type { ParameterMetadata } from '../../domain/Parameter.js';
  * **Falha de backup aborta a gravação.** Não é "melhor esforço": um backup que
  * falha em silêncio é pior que backup nenhum, porque cria a confiança sem a
  * garantia.
+ *
+ * `list` e `read` são o que transformam a pasta de backups em rollback de
+ * verdade: sem eles a cópia existe mas só serve para copiar e colar à mão, que é
+ * exatamente o fluxo que esta ferramenta existe para eliminar.
  */
 export interface BackupPort {
   /**
@@ -23,6 +27,15 @@ export interface BackupPort {
 
   /** Backups existentes de um parâmetro, do mais recente para o mais antigo. */
   list(parameterName: string): Promise<readonly BackupEntry[]>;
+
+  /**
+   * Lê um backup específico, com o valor.
+   *
+   * @param savedAt timestamp ISO que identifica o backup, vindo de `list`.
+   * @throws {BackupNotFoundError} quando não existe — pode ter sido podado
+   *         entre listar e escolher.
+   */
+  read(parameterName: string, savedAt: string): Promise<BackupFileContents>;
 }
 
 export interface BackupInput {
@@ -51,9 +64,11 @@ export interface BackupResult {
 /**
  * Envelope gravado em disco.
  *
- * Diferente do `.local-store`, que guarda só o JSON do valor: um backup sem os
- * metadados não serve para rollback — é preciso saber a versão de onde veio e o
- * `Type`/`Tier`/`KeyId` com que regravar.
+ * Guarda os metadados junto do valor porque um backup sem eles não serve para
+ * rollback: é preciso saber de que versão veio e com que `Type`/`Tier`/`KeyId` o
+ * parâmetro estava gravado.
+ *
+ * ATENÇÃO: `value` pode ser `SecureString` decriptado. Nunca logue este objeto.
  */
 export interface BackupFileContents {
   readonly name: string;

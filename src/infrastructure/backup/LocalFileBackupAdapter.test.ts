@@ -3,14 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ParameterMetadata } from '../../domain/Parameter.js';
-import { ParameterNameCollisionError } from '../../domain/errors.js';
+import { BackupNotFoundError } from '../../domain/errors.js';
 import { LocalFileBackupAdapter, fileNameFor, savedAtFrom } from './LocalFileBackupAdapter.js';
 import type { BackupFileContents } from './BackupPort.js';
+import type { RetentionLimit } from './retention.js';
 
 /**
- * O backup é a rede de proteção da gravação, e o arquivo dele contém segredo em
- * texto claro. Dois eixos de teste, portanto: que a cópia realmente existe e é
- * completa o bastante para rollback, e que ela nasce com permissão restrita.
+ * O backup é a rede de proteção da gravação **e** a origem do rollback, e o
+ * arquivo dele contém segredo em texto claro. Três eixos de teste, portanto: que
+ * a cópia existe e é completa o bastante para restaurar, que ela pode ser lida de
+ * volta, e que nasce com permissão restrita.
  */
 
 const METADATA: ParameterMetadata = {
@@ -23,15 +25,22 @@ const METADATA: ParameterMetadata = {
   description: 'descrição',
 };
 
-async function makeAdapter(
-  limits = { maxAgeDays: 90 as number | undefined, maxVersions: 20 as number | undefined },
-  clock?: () => Date,
-) {
+async function makeAdapter(maxVersions: RetentionLimit = 20, clock?: () => Date) {
   const root = await mkdtemp(join(tmpdir(), 'backups-'));
 
   return {
     root,
-    adapter: new LocalFileBackupAdapter(root, limits, clock ?? (() => new Date())),
+    adapter: new LocalFileBackupAdapter(root, maxVersions, clock ?? (() => new Date())),
+  };
+}
+
+/** Relógio que avança um segundo por chamada, para timestamps distintos. */
+function tickingClock(): () => Date {
+  let tick = 0;
+
+  return () => {
+    tick += 1;
+    return new Date(`2026-07-29T12:00:${String(tick).padStart(2, '0')}.000Z`);
   };
 }
 
@@ -92,24 +101,18 @@ describe('save — o arquivo e o layout', () => {
   });
 
   it('dois saves do mesmo parâmetro convivem', async () => {
-    let tick = 0;
-    const { adapter } = await makeAdapter(undefined, () => {
-      tick += 1;
-      return new Date(`2026-07-29T12:00:0${tick}.000Z`);
-    });
+    const { adapter } = await makeAdapter(20, tickingClock());
 
     await adapter.save({ metadata: METADATA, value: '{"v":1}' });
     await adapter.save({ metadata: METADATA, value: '{"v":2}' });
 
     expect(await adapter.list('/prod/billing/env')).toHaveLength(2);
   });
+});
 
+describe('list — o que a tela de rollback mostra', () => {
   it('lista do mais recente para o mais antigo', async () => {
-    let tick = 0;
-    const { adapter } = await makeAdapter(undefined, () => {
-      tick += 1;
-      return new Date(`2026-07-29T12:00:0${tick}.000Z`);
-    });
+    const { adapter } = await makeAdapter(20, tickingClock());
 
     await adapter.save({ metadata: METADATA, value: '{"v":1}' });
     await adapter.save({ metadata: METADATA, value: '{"v":2}' });
@@ -120,10 +123,86 @@ describe('save — o arquivo e o layout', () => {
     expect(entries[1]?.savedAt).toBe('2026-07-29T12:00:01.000Z');
   });
 
+  it('devolve a versão real do parâmetro, não um placeholder', async () => {
+    // É a versão que responde "restaurar isto me leva de volta a quê".
+    const { adapter } = await makeAdapter(20, tickingClock());
+
+    await adapter.save({ metadata: { ...METADATA, version: 3 }, value: '{"v":3}' });
+    await adapter.save({ metadata: { ...METADATA, version: 4 }, value: '{"v":4}' });
+
+    expect((await adapter.list('/prod/billing/env')).map((entry) => entry.version)).toEqual([4, 3]);
+  });
+
   it('parâmetro sem backup devolve lista vazia', async () => {
     const { adapter } = await makeAdapter();
 
     expect(await adapter.list('/nunca/salvo')).toEqual([]);
+  });
+
+  it('não devolve valor nenhum: só o que a lista precisa', async () => {
+    const { adapter } = await makeAdapter();
+    await adapter.save({ metadata: METADATA, value: '{"segredo":"nao-deve-vazar"}' });
+
+    expect(JSON.stringify(await adapter.list('/prod/billing/env'))).not.toContain(
+      'nao-deve-vazar',
+    );
+  });
+
+  it('arquivo corrompido é omitido em vez de quebrar a listagem', async () => {
+    const { root, adapter } = await makeAdapter();
+    await adapter.save({ metadata: METADATA, value: '{"bom":true}' });
+    await writeFile(
+      join(root, 'prod', 'billing', 'env', '2026-01-01T00-00-00.000Z.json'),
+      '{"name": "/prod/billing/env"',
+    );
+
+    expect(await adapter.list('/prod/billing/env')).toHaveLength(1);
+  });
+});
+
+describe('read — carregar um backup para restaurar', () => {
+  it('devolve o envelope completo do backup escolhido', async () => {
+    const { adapter } = await makeAdapter(20, tickingClock());
+
+    await adapter.save({ metadata: { ...METADATA, version: 6 }, value: '{"v":6}' });
+    await adapter.save({ metadata: { ...METADATA, version: 7 }, value: '{"v":7}' });
+
+    const contents = await adapter.read('/prod/billing/env', '2026-07-29T12:00:01.000Z');
+
+    expect(contents.version).toBe(6);
+    expect(contents.value).toBe('{"v":6}');
+    expect(contents.type).toBe('SecureString');
+    expect(contents.keyId).toBe('alias/minha-chave');
+  });
+
+  it('backup inexistente lança BackupNotFoundError', async () => {
+    const { adapter } = await makeAdapter();
+
+    await expect(
+      adapter.read('/prod/billing/env', '2020-01-01T00:00:00.000Z'),
+    ).rejects.toBeInstanceOf(BackupNotFoundError);
+  });
+
+  it('backup podado depois de listado lança BackupNotFoundError, não erro genérico', async () => {
+    // O caso real: a retenção apagou o arquivo entre a listagem e o clique.
+    const { adapter } = await makeAdapter(1, tickingClock());
+
+    await adapter.save({ metadata: METADATA, value: '{"v":1}' });
+    const antigo = '2026-07-29T12:00:01.000Z';
+    await adapter.save({ metadata: METADATA, value: '{"v":2}' });
+
+    await expect(adapter.read('/prod/billing/env', antigo)).rejects.toMatchObject({
+      code: 'BACKUP_NOT_FOUND',
+      httpStatus: 404,
+    });
+  });
+
+  it('a mensagem de ausência não expõe conteúdo, só name e data', async () => {
+    const { adapter } = await makeAdapter();
+
+    await expect(adapter.read('/prod/billing/env', '2020-01-01T00:00:00.000Z')).rejects.toMatchObject(
+      { publicMessage: expect.stringContaining('/prod/billing/env') },
+    );
   });
 });
 
@@ -164,14 +243,7 @@ describe('save — permissões', () => {
 
 describe('retenção aplicada na gravação', () => {
   it('poda o excedente e informa o que apagou', async () => {
-    let tick = 0;
-    const { adapter } = await makeAdapter(
-      { maxAgeDays: undefined, maxVersions: 2 },
-      () => {
-        tick += 1;
-        return new Date(`2026-07-29T12:00:${String(tick).padStart(2, '0')}.000Z`);
-      },
-    );
+    const { adapter } = await makeAdapter(2, tickingClock());
 
     await adapter.save({ metadata: METADATA, value: '{"v":1}' });
     await adapter.save({ metadata: METADATA, value: '{"v":2}' });
@@ -181,15 +253,8 @@ describe('retenção aplicada na gravação', () => {
     expect(await adapter.list('/prod/billing/env')).toHaveLength(2);
   });
 
-  it('sem limites, nada é podado', async () => {
-    let tick = 0;
-    const { adapter } = await makeAdapter(
-      { maxAgeDays: undefined, maxVersions: undefined },
-      () => {
-        tick += 1;
-        return new Date(`2026-07-29T12:00:${String(tick).padStart(2, '0')}.000Z`);
-      },
-    );
+  it('sem limite, nada é podado', async () => {
+    const { adapter } = await makeAdapter(undefined, tickingClock());
 
     for (let index = 0; index < 5; index += 1) {
       await adapter.save({ metadata: METADATA, value: '{}' });
@@ -199,11 +264,7 @@ describe('retenção aplicada na gravação', () => {
   });
 
   it('a poda de um parâmetro não toca no outro', async () => {
-    let tick = 0;
-    const { adapter } = await makeAdapter({ maxAgeDays: undefined, maxVersions: 1 }, () => {
-      tick += 1;
-      return new Date(`2026-07-29T12:00:${String(tick).padStart(2, '0')}.000Z`);
-    });
+    const { adapter } = await makeAdapter(1, tickingClock());
 
     await adapter.save({ metadata: METADATA, value: '{}' });
     await adapter.save({ metadata: { ...METADATA, name: '/outro/param' }, value: '{}' });
@@ -215,27 +276,33 @@ describe('retenção aplicada na gravação', () => {
 });
 
 describe('colisão de caixa no APFS', () => {
-  it('recusa quando o diretório existente difere só na caixa', async () => {
-    // /prod/env e /Prod/env são parâmetros diferentes no SSM e cairiam no mesmo
-    // diretório de backup: um sobrescreveria o histórico do outro em silêncio.
+  /**
+   * `/prod/env` e `/Prod/env` são parâmetros diferentes no SSM e caem no mesmo
+   * diretório em APFS case-insensitive. A defesa é o `name` gravado dentro do
+   * arquivo: backup de outro parâmetro não aparece na lista e não pode ser lido.
+   */
+  it('backup de outro parâmetro não aparece na listagem', async () => {
     const { root, adapter } = await makeAdapter();
     await mkdir(join(root, 'prod', 'env'), { recursive: true });
+    await writeFile(
+      join(root, 'prod', 'env', '2026-07-29T12-00-00.000Z.json'),
+      JSON.stringify({ name: '/Prod/env', version: 1, value: '{"outro":true}' }),
+    );
 
-    await expect(
-      adapter.save({ metadata: { ...METADATA, name: '/Prod/env' }, value: '{}' }),
-    ).rejects.toBeInstanceOf(ParameterNameCollisionError);
+    expect(await adapter.list('/prod/env')).toEqual([]);
   });
 
-  it('a mensagem pública nomeia o conflito', async () => {
+  it('read recusa arquivo cujo name é de outro parâmetro', async () => {
     const { root, adapter } = await makeAdapter();
-    await mkdir(join(root, 'prod'), { recursive: true });
+    await mkdir(join(root, 'prod', 'env'), { recursive: true });
+    await writeFile(
+      join(root, 'prod', 'env', '2026-07-29T12-00-00.000Z.json'),
+      JSON.stringify({ name: '/Prod/env', version: 1, value: '{"outro":true}' }),
+    );
 
-    await expect(
-      adapter.save({ metadata: { ...METADATA, name: '/PROD/x' }, value: '{}' }),
-    ).rejects.toMatchObject({
-      code: 'PARAMETER_NAME_COLLISION',
-      publicMessage: expect.stringContaining('/prod'),
-    });
+    await expect(adapter.read('/prod/env', '2026-07-29T12:00:00.000Z')).rejects.toBeInstanceOf(
+      BackupNotFoundError,
+    );
   });
 });
 

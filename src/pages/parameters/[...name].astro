@@ -1,10 +1,16 @@
 ---
 import Base from '../../layouts/Base.astro';
 import ParameterEditor from '../../components/editor/ParameterEditor.tsx';
+import { BackupHistoryUseCase } from '../../application/BackupHistoryUseCase.js';
+import type { RestoreCandidate } from '../../application/BackupHistoryUseCase.js';
 import { GetParameterUseCase } from '../../application/GetParameterUseCase.js';
 import type { GetParameterResult } from '../../application/GetParameterUseCase.js';
-import { storeContextFromUrl } from '../../infrastructure/http/storeContext.js';
-import { resolveDriver, resolveParameterStore } from '../../infrastructure/store/index.js';
+import { storeContextFromUrl, withProfile } from '../../infrastructure/http/storeContext.js';
+import {
+  getBackupPort,
+  resolveDriver,
+  resolveParameterStore,
+} from '../../infrastructure/store/index.js';
 import { isAppError } from '../../domain/errors.js';
 
 export const prerender = false;
@@ -30,13 +36,40 @@ try {
   loadErrorCode = isAppError(error) ? error.code : undefined;
 }
 
-const homeLink = context.profileName === undefined
-  ? '/'
-  : `/?profile=${encodeURIComponent(context.profileName)}`;
+/**
+ * `?restore=<savedAt>` abre o editor com o valor de um backup como rascunho.
+ *
+ * A base continua sendo o valor **atual** do store, e a versão do recheque de
+ * concorrência vem dela. É isso que faz o rollback passar pelo mesmo diff, pela
+ * mesma confirmação e pelo mesmo backup-antes-de-gravar de qualquer outra edição:
+ * restaurar não tem caminho próprio de escrita.
+ *
+ * Falha ao ler o backup não derruba a página — o editor abre normalmente com o
+ * valor atual, e o aviso explica o que não aconteceu.
+ */
+const restoreParam = Astro.url.searchParams.get('restore')?.trim();
+let restored: RestoreCandidate | undefined;
+let restoreError: string | undefined;
+
+if (restoreParam !== undefined && restoreParam !== '' && parameter !== undefined) {
+  try {
+    restored = await new BackupHistoryUseCase(getBackupPort()).read(name, restoreParam);
+  } catch (error) {
+    restoreError = isAppError(error)
+      ? error.publicMessage
+      : 'Não foi possível ler o backup escolhido.';
+  }
+}
+
+const homeLink = withProfile('/', context.profileName);
+const backupsLink = withProfile(`/backups${name}`, context.profileName);
 ---
 
 <Base title={name} driver={driver} profileName={context.profileName}>
-  <p class="back-link"><a href={homeLink}>← Todos os parâmetros</a></p>
+  <p class="back-link">
+    <a href={homeLink}>← Todos os parâmetros</a>
+    {!loadError && <> · <a href={backupsLink}>Backups e rollback</a></>}
+  </p>
 
   {
     loadError ? (
@@ -53,22 +86,23 @@ const homeLink = context.profileName === undefined
 
         {loadErrorCode === 'PARAMETER_NOT_FOUND' && (
           <p class="muted">
-            Parâmetro inexistente não vira criação implícita. Criar é fluxo separado e explícito,
-            com escolha consciente de <code>Type</code>, <code>Tier</code> e <code>KeyId</code> — e
-            está fora do escopo por decisão sua.
+            Parâmetro inexistente não vira criação implícita. Esta ferramenta edita parâmetros que
+            já existem: crie pelo console ou pela CLI da AWS, escolhendo <code>Type</code>,
+            <code>Tier</code> e <code>KeyId</code>, e depois volte aqui.
           </p>
-        )}
-
-        {loadErrorCode === 'WRITE_NOT_ENABLED' && (
-          <p class="muted">A escrita entra junto com o backup local.</p>
         )}
       </>
     ) : (
-      <ParameterEditor
-        parameter={parameter!}
-        profileName={context.profileName}
-        client:load
-      />
+      <>
+        {restoreError && <p class="notice error">{restoreError}</p>}
+
+        <ParameterEditor
+          parameter={parameter!}
+          profileName={context.profileName}
+          restored={restored}
+          client:load
+        />
+      </>
     )
   }
 </Base>

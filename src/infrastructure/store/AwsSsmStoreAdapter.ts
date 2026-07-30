@@ -19,7 +19,7 @@ import {
   ProfileNotAuthenticatedError,
   StoreUnavailableError,
   VersionMismatchError,
-  WriteNotEnabledError,
+  ParameterCreationNotSupportedError,
   isAppError,
 } from '../../domain/errors.js';
 import { parseParameterName } from '../../domain/parameterName.js';
@@ -201,7 +201,7 @@ export class AwsSsmStoreAdapter implements ParameterStorePort {
 
     if (options.expectedVersion === EXPECT_NEW_PARAMETER) {
       // Criar é fluxo separado e explícito, fora de escopo por decisão.
-      throw new WriteNotEnabledError(parameterName);
+      throw new ParameterCreationNotSupportedError(parameterName);
     }
 
     const current = await this.describeOne(parameterName);

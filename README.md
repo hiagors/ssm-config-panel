@@ -4,11 +4,11 @@ Ferramenta web **local** para visualizar, validar e editar parâmetros JSON no A
 Store. Roda na sua máquina, em loopback, e substitui a edição de JSON cru no console da AWS.
 
 > **Estado atual: todas as fases concluídas.** Lê e grava no SSM real, com seletor de profiles,
-> login SSO, `SecureString` decriptado, diff obrigatório, proteção contra escrita concorrente e
-> backup da versão anterior antes de cada gravação.
+> login SSO, `SecureString` decriptado, diff obrigatório, proteção contra escrita concorrente,
+> backup da versão anterior antes de cada gravação e **rollback pela própria interface**.
 >
-> Fora de escopo por decisão: histórico (`GetParameterHistory`) e fluxo de criação de parâmetro —
-> o rollback é coberto pelos backups locais.
+> Fora de escopo por decisão: histórico nativo (`GetParameterHistory`) e criação de parâmetro — o
+> rollback é coberto pelos backups locais, em [`/backups/<name>`](#rollback).
 
 ## Pré-requisitos
 
@@ -64,18 +64,39 @@ A escolha do adapter vem de `STORE_DRIVER` no `.env`, resolvida em um único *co
 
 | Valor | Adapter | Situação |
 | --- | --- | --- |
-| `local` | `LocalFileStoreAdapter` | grava JSON em `./.local-store`, espelhando o formato do SSM |
+| `local` | `LocalFileStoreAdapter` | grava em `./.local-store`, para desenvolver sem tocar em conta AWS |
 | `aws` | `AwsSsmStoreAdapter` | SSM real, leitura e gravação, sempre atrás de backup |
 
-O store local espelha a hierarquia do SSM em diretórios:
+O store local é **um arquivo plano por parâmetro**, com valor e metadados juntos:
 
 ```
-/example/demo/env  ->  .local-store/example/demo/env.json        # o JSON do valor, sem envelope
-                       .local-store/example/demo/env.meta.json   # Type, Tier, KeyId, Version
+/example/demo/env  ->  .local-store/example#demo#env.json
 ```
 
-O arquivo de valor contém **exatamente** o JSON do valor. Os metadados ficam num sidecar porque o
-save da Fase 2 precisa preservar `Type`, `KeyId` e `Tier` do parâmetro original.
+```json
+{
+  "name": "/example/demo/env",
+  "type": "String",
+  "tier": "Standard",
+  "keyId": null,
+  "version": 3,
+  "value": "{\"SERVICE_NAME\":\"example-demo\"}"
+}
+```
+
+Três decisões que valem explicação:
+
+- **`#` como separador**, e não `_`: `#` é ilegal em segmento de name no SSM, então a codificação é
+  injetiva. Com `_`, os names `/a_b/c` e `/a/b/c` cairiam no mesmo arquivo.
+- **Nome de arquivo minúsculo**, com o name verdadeiro dentro. O APFS não distingue caixa, mas o SSM
+  sim: `/prod/env` e `/PROD/env` são parâmetros diferentes. Toda leitura compara o `name` gravado com
+  o que foi pedido e falha alto se divergir — em vez de devolver, ou pior, sobrescrever o parâmetro
+  errado. Isso substituiu uma varredura de diretório que comparava caixa nível por nível.
+- **Sem sidecar de metadados.** Eram dois arquivos por parâmetro, com lógica de merge e de defaults
+  para o caso de um faltar. O envelope único resolve o mesmo problema — o save precisa preservar
+  `Type`, `Tier` e `KeyId` — sem o segundo arquivo. A consequência aceita é que `list()` lê o valor
+  do disco para pegar os metadados; ela continua **devolvendo somente metadados**, e nenhum valor
+  atravessa a fronteira HTTP.
 
 ### Configuração do profile SSO
 
@@ -175,6 +196,32 @@ Escrita por temporário + `rename`, e por um motivo: o backup é lido como prova
 anterior está salva, e um arquivo truncado por queda no meio da escrita seria pior que ausência —
 pareceria válido.
 
+### Rollback
+
+Cada parâmetro tem uma tela de histórico em **`/backups/<name>`**, alcançável pelo link
+_"Backups e rollback"_ no topo do editor. Ela lista as cópias existentes com data e versão — só
+metadados, nenhum valor.
+
+Escolher uma cópia abre o editor em `/parameters/<name>?restore=<timestamp>` com o valor antigo já
+carregado **como rascunho**. A partir daí não há caminho especial: é o fluxo normal de gravação.
+
+```
+histórico  ->  editor (rascunho = valor antigo, base = valor atual)
+           ->  diff estrutural: o que muda em relação ao que está no store agora
+           ->  confirmação explícita
+           ->  backup da versão atual  ->  PutParameter
+```
+
+Duas coisas caem dessa escolha, e são o motivo dela:
+
+1. **Restaurar não pula a revisão.** Um botão "restaurar" que gravasse direto pularia o diff e a
+   confirmação, e "nunca salvar por acidente" é critério de aceitação — vale para desfazer também.
+2. **O rollback tem rollback.** Como a gravação é a normal, restaurar a versão 6 sobre a 8 copia a 8
+   para `./.backups` antes de gravar. Desfazer o desfazer é só voltar à mesma tela.
+
+O `BackupHistoryUseCase` **não grava nada**, e há teste fixando isso: se restaurar ganhasse um
+caminho de escrita próprio, ganharia também a chance de divergir das duas garantias acima.
+
 ### Retenção
 
 `./.backups/` é o único lugar do desenho que guarda em texto claro o que o SSM guarda cifrado. Sem
@@ -183,12 +230,17 @@ poda, cada save de um `SecureString` deixa mais uma cópia permanente do segredo
 | Variável | Padrão | O que faz |
 | --- | --- | --- |
 | `BACKUP_DIR` | `./.backups` | onde as cópias ficam |
-| `BACKUP_MAX_AGE_DAYS` | `90` | idade máxima; `0` desliga |
-| `BACKUP_MAX_VERSIONS_PER_PARAMETER` | `20` | quantidade máxima; `0` desliga |
+| `BACKUP_MAX_VERSIONS_PER_PARAMETER` | `20` | quantidade máxima por parâmetro; `0` desliga |
 
-**O backup mais recente nunca é apagado**, independente dos dois limites. Sem essa regra, um
-`BACKUP_MAX_AGE_DAYS=1` esquecido no `.env` apagaria a única cópia existente na primeira poda — e a
-poda roda justamente no momento em que a versão anterior está sendo sobrescrita.
+**O backup mais recente nunca é apagado**, independente do limite. Sem essa regra, um
+`BACKUP_MAX_VERSIONS_PER_PARAMETER` mal entendido apagaria a única cópia existente na primeira poda —
+e a poda roda justamente no momento em que a versão anterior está sendo sobrescrita. É também por
+isso que `0` **desliga** a poda em vez de apagar tudo: desligar por engano é recuperável, apagar não.
+
+Havia também poda por idade (`BACKUP_MAX_AGE_DAYS`, hoje ignorada). Saiu porque o limite de contagem
+já **limita** o acúmulo — no máximo N cópias por parâmetro, para sempre. A poda por idade só mudava
+*quais* dessas N ficavam, ao custo de um segundo eixo de configuração e de decidir o que fazer com
+timestamp ilegível.
 
 A poda é por parâmetro, na gravação, e falha de poda **não** invalida o backup recém-gravado: a rede
 de proteção está de pé, só sobrou lixo. Abortar ali bloquearia o save por um problema de limpeza.
@@ -305,11 +357,19 @@ devolve `Version`, e isso basta:
 
 1. A versão lida no GET vive junto com o texto base, no estado do editor.
 2. No save, o servidor **relê** o parâmetro e compara.
-3. Se a versão mudou, a gravação é **abortada** e a tela mostra diff de três vias — base carregada /
-   versão atual no store / minha edição — classificando cada caminho em *só eu*, *só o outro* ou
-   *conflito*.
-4. O rascunho continua intacto: dá para rebasear na versão atual, descartar e recarregar, ou voltar
-   a editar.
+3. Se a versão mudou, a gravação é **abortada**, e um aviso não-bloqueante diz em que versão o
+   parâmetro está e de qual a sua edição partiu. O rascunho continua intacto e o editor continua na
+   tela.
+4. Três saídas: continuar editando, **comparar o rascunho com a versão de fora**, ou descartar o
+   rascunho e recarregar.
+
+A opção do meio é o que substituiu uma tela de diff de três vias. Ela adota a versão de fora como
+base e mantém o seu texto: o diff normal de revisão passa a mostrar exatamente o que você mudaria em
+relação a ela — **inclusive o que reverteria da alteração da outra pessoa**. Ou seja, a informação que
+a tela de três vias dava continua aparecendo, no lugar onde você já ia olhar de todo jeito, e sem uma
+segunda visualização de diff para manter. Há teste fixando essa propriedade em
+[structuralDiff.test.ts](src/domain/json/structuralDiff.test.ts) — se ela falhasse, confirmar depois
+de rebasear seria sobrescrever às cegas com uma revisão que mentiu.
 
 A checagem existe em duas camadas: no use case e de novo no adapter, via `PutOptions.expectedVersion`
 — assim vale para qualquer chamador do port, não só para o caminho que a UI usa.
@@ -343,21 +403,21 @@ tratadas em [csrf.ts](src/infrastructure/http/csrf.ts) e aplicadas no middleware
 
 ## Limitações conhecidas
 
-- **Criar parâmetro não é possível pela ferramenta.** `put()` exige que o parâmetro exista; criar é
-  fluxo separado e explícito, fora de escopo por decisão.
-- **Sem histórico e sem fluxo de criação de parâmetro**, por decisão de escopo: usar a ferramenta
-  por duas semanas antes de decidir se fazem falta.
+- **Criar parâmetro não é possível pela ferramenta.** `put()` exige que o parâmetro exista; crie pelo
+  console ou pela CLI da AWS, escolhendo `Type`, `Tier` e `KeyId`, e depois volte para editar.
+- **Sem histórico nativo do SSM** (`GetParameterHistory`), por decisão de escopo. O rollback é
+  coberto pelos backups locais, que só têm as versões gravadas por esta ferramenta.
 - **A busca do editor casa segmento completo**, não pedaço de nome: `banking` encontra a chave
   `banking`, `bank` não encontra nada. Filtro por substring devolveria resultado que ninguém pediu.
 - **Diff de lista é por índice.** Item de lista não tem chave, então inserir no começo marca os
   índices seguintes como alterados. É verdade — os índices mudaram — mas é ruidoso. Objetos casam
   por chave e não sofrem disso.
 - **Rebasear é literal:** adota a versão atual do store como base e mantém o seu texto por cima. Se
-  a outra pessoa mudou um caminho que você também mudou, o seu texto vence. O diff de três vias
-  mostra isso antes; a decisão é sua.
-- **Conflito de `SecureString` não tem botão de revelar.** Mostra só quais caminhos divergiram.
-  Revelar três versões de um segredo numa tela de decisão apressada é o oposto do critério de
-  compartilhar tela com segurança — para ver o conteúdo, volte a editar e revele campo por campo.
+  a outra pessoa mudou um caminho que você também mudou, o seu texto vence. O diff da revisão mostra
+  isso antes de qualquer gravação; a decisão é sua.
+- **Restaurar um backup só volta o valor**, não os metadados. `Type`, `Tier` e `KeyId` gravados são
+  sempre os do parâmetro **atual**, não os do backup — o backup guarda os dele para referência, mas
+  um rollback não rebaixa tier nem troca chave KMS por efeito colateral.
 - **Reordenar é por arrastar a alça, ou `Alt+↑/↓` com a alça focada.** A alça aparece no hover e no
   foco por teclado. Arrastar só funciona entre irmãos: mover entre pais diferentes seria remover e
   inserir, outra operação com outra semântica de diff.
@@ -365,7 +425,12 @@ tratadas em [csrf.ts](src/infrastructure/http/csrf.ts) e aplicadas no middleware
   mostra o caminho. Indentar além disso comeria a coluna de chave de 190px.
 - **Raiz que não é objeto nem lista** (um parâmetro cujo valor é só uma string, por exemplo) não
   tem formulário de chave-valor: cai na aba JSON cru, com aviso.
-- **Chave terminada em `.meta`** é rejeitada no driver local, porque colidiria com o sidecar.
+- **No driver local, names que só diferem na caixa não coexistem.** `/prod/env` e `/PROD/env` são
+  parâmetros distintos no SSM, mas caem no mesmo arquivo em APFS. A ferramenta falha alto em vez de
+  devolver ou sobrescrever o errado. Contra o SSM real não há essa restrição.
+- **Backups de dois parâmetros que só diferem na caixa compartilham diretório.** O `name` dentro de
+  cada arquivo é conferido, então nenhum backup do outro parâmetro aparece na lista nem pode ser
+  restaurado — mas os dois históricos moram no mesmo lugar em disco.
 - **Sem histórico.** O port não expõe `history()` e a policy não pede `ssm:GetParameterHistory` —
   manter um método que nenhum use case chama seria contrato mentindo sobre capacidade. Para
   rollback, use os backups em `./.backups`, ou o histórico nativo pelo console da AWS.
@@ -403,7 +468,7 @@ em [docs/iam-policy.json](docs/iam-policy.json).
 - [x] **Fase 2a** — editor de chave-valor com aninhamento, listas, tipos, validação, aba de JSON
       cru bidirecional e mascaramento de `SecureString`. Sem gravação.
 - [x] **Fase 2b** — diff estrutural por caminho, confirmação explícita, `PUT`, proteção contra lost
-      update com diff de três vias, e CSRF (`security.checkOrigin` + validação de Host).
+      update, e CSRF (`security.checkOrigin` + validação de Host).
 - [x] **Fase 3a** — seletor de profiles (com os sem SSO bloqueados), login SSO, `AwsSsmStoreAdapter`
       somente-leitura, `SecureString` real, sessão do Astro desligada.
 - [x] **Fase 3b** — backup local + retenção, e a escrita no SSM real habilitada em cima disso.
@@ -431,6 +496,9 @@ em [docs/iam-policy.json](docs/iam-policy.json).
 - [x] Erros aparecem com mensagem acionável, não com stack trace.
 - [x] Compartilhar a tela com um parâmetro `SecureString` aberto não expõe valor sem ação
       deliberada.
+- [x] Voltar para uma versão anterior é possível pela própria ferramenta, sem abrir o Finder.
+      *(`/backups/<name>` → carrega no editor → diff → confirmação; e a versão substituída também
+      vira backup.)*
 
 ### O que os testes garantem
 
@@ -446,5 +514,8 @@ em [docs/iam-policy.json](docs/iam-policy.json).
 | save em name inexistente não cria | [SaveParameterUseCase.test.ts](src/application/SaveParameterUseCase.test.ts) |
 | backup acontece antes do `put`, e falha de backup aborta | [SaveParameterUseCase.test.ts](src/application/SaveParameterUseCase.test.ts) |
 | o backup mais recente nunca é podado | [retention.test.ts](src/infrastructure/backup/retention.test.ts) |
+| restaurar um backup não grava nada por si: só carrega rascunho | [BackupHistoryUseCase.test.ts](src/application/BackupHistoryUseCase.test.ts) |
+| depois de rebasear, o diff mostra o que a minha edição reverteria da outra pessoa | [structuralDiff.test.ts](src/domain/json/structuralDiff.test.ts) |
+| name que só difere na caixa não devolve nem sobrescreve o parâmetro errado | [LocalFileStoreAdapter.test.ts](src/infrastructure/store/LocalFileStoreAdapter.test.ts) |
 | nenhum módulo da ilha usa API só-de-Node | [browserSafety.test.ts](src/components/editor/browserSafety.test.ts) |
 | sessão do Astro não escreve em disco | [astroConfig.test.ts](src/astroConfig.test.ts) |

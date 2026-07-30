@@ -8,7 +8,7 @@
 // `null` vs string vazia, int vs float e array heterogêneo.
 
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
@@ -53,26 +53,32 @@ const value = {
   },
 };
 
-const metadata = {
+/**
+ * Envelope do store local: valor e metadados no mesmo arquivo plano.
+ *
+ * A forma tem de casar com `serialize()` em `LocalFileStoreAdapter.ts` — em
+ * especial o `name`, que é o que o adapter compara para detectar colisão de
+ * caixa. O nome do arquivo troca `/` por `#` e é minúsculo.
+ */
+const envelope = {
+  name: PARAMETER_NAME,
   type: 'String',
   tier: 'Standard',
   keyId: null,
   version: 1,
   lastModifiedAt: new Date().toISOString(),
   description: 'Parâmetro de exemplo criado por scripts/seed-local-store.mjs',
+  value: `${JSON.stringify(value, null, 2)}\n`,
 };
 
-const relativePath = PARAMETER_NAME.slice(1);
-const valuePath = join(rootDir, `${relativePath}.json`);
-const metaPath = join(rootDir, `${relativePath}.meta.json`);
+const fileName = `${PARAMETER_NAME.slice(1).split('/').join('#').toLowerCase()}.json`;
+const filePath = join(rootDir, fileName);
 
-await mkdir(dirname(valuePath), { recursive: true, mode: DIR_MODE });
-await writeFile(valuePath, `${JSON.stringify(value, null, 2)}\n`, { mode: FILE_MODE });
-await writeFile(metaPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: FILE_MODE });
+await mkdir(rootDir, { recursive: true, mode: DIR_MODE });
+await writeFile(filePath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: FILE_MODE });
 
 console.log(`Criado ${PARAMETER_NAME}`);
-console.log(`  valor:     ${valuePath}`);
-console.log(`  metadados: ${metaPath}`);
+console.log(`  arquivo: ${filePath}`);
 console.log('');
 console.log('Estes arquivos contêm valores em texto claro e ficam fora do git.');
 console.log(`Abra em: http://127.0.0.1:${process.env['PORT'] ?? 4321}/parameters${PARAMETER_NAME}`);

@@ -42,9 +42,8 @@ export const GET: APIRoute = async ({ params, url }) => {
  * dela em silêncio.
  *
  * Desfechos que **não** são erro, e por isso não passam pelo error mapper:
- * `conflict` carrega o valor atual do store, que o cliente precisa para montar
- * o diff de três vias — e o mapper redige por padrão. Ver
- * `SaveParameterUseCase`.
+ * `conflict` carrega o valor atual do store, que o cliente precisa para rebasear
+ * e recomparar — e o mapper redige por padrão. Ver `SaveParameterUseCase`.
  *
  * A checagem de origem e de Host acontece antes, no middleware.
  */

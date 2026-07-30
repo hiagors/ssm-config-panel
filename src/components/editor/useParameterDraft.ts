@@ -87,12 +87,24 @@ export type DraftAction =
   /** Adota uma leitura nova do store e **descarta** a minha edição. */
   | { readonly type: 'RELOAD'; readonly text: string; readonly version: number };
 
-/** Monta o estado inicial a partir do que o GET trouxe. */
-export function initialDraftState(loadedText: string, loadedVersion: number): DraftState {
+/**
+ * Monta o estado inicial a partir do que o GET trouxe.
+ *
+ * `draftText` existe para o rollback: ao restaurar um backup, a **base** continua
+ * sendo o valor atual do store (é ela que o diff compara e é dela que vem a
+ * versão do recheque de concorrência), mas o **conteúdo** já começa sendo o valor
+ * antigo. O rascunho nasce sujo de propósito: restaurar é uma edição, e passa
+ * pelo mesmo diff e pela mesma confirmação de qualquer outra.
+ */
+export function initialDraftState(
+  loadedText: string,
+  loadedVersion: number,
+  draftText?: string,
+): DraftState {
   return {
     base: { text: loadedText, version: loadedVersion },
     tab: 'structured',
-    content: contentFromText(loadedText),
+    content: contentFromText(draftText ?? loadedText),
     revealAll: false,
     revealedPaths: new Set(),
   };
@@ -209,11 +221,13 @@ export function useParameterDraft(
   loadedText: string,
   loadedVersion: number,
   isSecret: boolean,
+  /** Rascunho inicial diferente do valor carregado. Usado pelo rollback. */
+  initialDraftText?: string | undefined,
 ): UseParameterDraft {
   const [state, dispatch] = useReducer(
     draftReducer,
     undefined,
-    () => initialDraftState(loadedText, loadedVersion),
+    () => initialDraftState(loadedText, loadedVersion, initialDraftText),
   );
 
   const currentText = useMemo(() => draftText(state), [state]);

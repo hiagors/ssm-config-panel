@@ -1,0 +1,97 @@
+---
+import Base from '../../layouts/Base.astro';
+import { BackupHistoryUseCase } from '../../application/BackupHistoryUseCase.js';
+import type { BackupSummary } from '../../application/BackupHistoryUseCase.js';
+import { storeContextFromUrl, withProfile } from '../../infrastructure/http/storeContext.js';
+import { getBackupPort, resolveBackupDir, resolveDriver } from '../../infrastructure/store/index.js';
+import { isAppError } from '../../domain/errors.js';
+
+export const prerender = false;
+
+/**
+ * Histórico de backups de um parâmetro — a tela de rollback.
+ *
+ * Não grava nada. Cada item leva de volta ao editor com o valor antigo já
+ * carregado como rascunho, e a gravação acontece pelo caminho normal: diff,
+ * confirmação, recheque de versão e backup da versão atual antes de sobrescrever.
+ * Restaurar é uma edição como qualquer outra, e por isso não ganha um botão que
+ * grava direto.
+ *
+ * Só metadados chegam aqui: datas e versões, nunca valores. O valor do backup só
+ * é lido quando um item é escolhido, e vai direto para o editor.
+ */
+const driver = resolveDriver();
+const context = storeContextFromUrl(Astro.url);
+const routeName = Astro.params.name ?? '';
+const name = routeName.startsWith('/') ? routeName : `/${routeName}`;
+
+let backups: readonly BackupSummary[] = [];
+let loadError: string | undefined;
+
+try {
+  backups = await new BackupHistoryUseCase(getBackupPort()).list(name);
+} catch (error) {
+  loadError = isAppError(error)
+    ? error.publicMessage
+    : 'Não foi possível ler o histórico de backups.';
+}
+
+const editorLink = withProfile(`/parameters${name}`, context.profileName);
+
+/** Link que abre o editor com este backup já carregado como rascunho. */
+function restoreLink(savedAt: string): string {
+  return withProfile(
+    `/parameters${name}?restore=${encodeURIComponent(savedAt)}`,
+    context.profileName,
+  );
+}
+
+/** Data local legível. O `savedAt` cru continua sendo a identidade do backup. */
+function formatDate(savedAt: string): string {
+  const instant = new Date(savedAt);
+
+  return Number.isNaN(instant.getTime())
+    ? savedAt
+    : instant.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' });
+}
+---
+
+<Base title={`Backups de ${name}`} driver={driver} profileName={context.profileName}>
+  <p class="back-link"><a href={editorLink}>← Voltar ao editor</a></p>
+
+  <h1 class="param-name">{name}</h1>
+  <p class="muted">
+    Cópias da versão anterior, gravadas automaticamente antes de cada gravação. Escolher uma carrega
+    o valor no editor como rascunho — nada é gravado até você revisar o diff e confirmar.
+  </p>
+
+  {loadError && <p class="notice error">{loadError}</p>}
+
+  {
+    !loadError && backups.length === 0 && (
+      <p class="notice">
+        Nenhum backup ainda. O primeiro aparece aqui depois da primeira gravação feita por esta
+        ferramenta — o histórico começa quando ela passa a ser o caminho de escrita.
+      </p>
+    )
+  }
+
+  {
+    backups.length > 0 && (
+      <ul class="parameters">
+        {backups.map((backup) => (
+          <li>
+            <a href={restoreLink(backup.savedAt)}>versão {backup.version}</a>
+            <span class="muted list-meta">{formatDate(backup.savedAt)}</span>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+
+  <p class="muted hint">
+    Os arquivos ficam em <code>{resolveBackupDir()}</code>, com permissão <code>0600</code>, e
+    contêm o valor em texto claro — inclusive <code>SecureString</code> decriptado. A retenção
+    mantém as mais recentes de cada parâmetro e a mais nova nunca é apagada.
+  </p>
+</Base>

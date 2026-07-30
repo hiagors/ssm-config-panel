@@ -15,13 +15,15 @@ import { validateDocument } from './validation/validateDocument.js';
  *
  * ── Por que o resultado não é exceção ───────────────────────────────────────
  *
- * O conflito de lost update **precisa** carregar o valor atual do store: sem
- * ele o cliente não tem como montar o diff de três vias. E o error mapper
- * central redige por padrão, de propósito — nada além de mensagem curada
+ * O conflito de lost update **precisa** carregar o valor atual do store: é com
+ * ele que o editor oferece "comparar meu rascunho com a versão de fora", que
+ * adota aquela versão como base e deixa o diff normal mostrar o que a minha
+ * edição mudaria — e o que reverteria — em relação a ela. E o error mapper
+ * central redige por padrão, de propósito: nada além de mensagem curada
  * atravessa a fronteira HTTP.
  *
  * Se conflito fosse exceção, uma das duas coisas quebraria: ou a redação
- * deixaria passar o valor, ou o diff não teria o que mostrar. Modelar como
+ * deixaria passar o valor, ou o editor não teria com o que comparar. Modelar como
  * **resultado** resolve os dois: o valor viaja pelo helper normal de resposta
  * JSON, com `no-store`, e a invariante "valor de parâmetro nunca entra em
  * objeto de erro" fica intacta.
@@ -61,7 +63,7 @@ export type SaveOutcome =
       readonly outcome: 'conflict';
       readonly expectedVersion: number;
       readonly currentVersion: number;
-      /** Valor atual no store, necessário para o diff de três vias. */
+      /** Valor atual no store, para o editor rebasear e recomparar. */
       readonly currentValue: string;
       readonly currentMetadata: ParameterMetadata;
     }

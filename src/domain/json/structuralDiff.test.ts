@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { JsonDocument } from './JsonDocument.js';
 import { parseJsonDocument } from './parseJsonDocument.js';
-import { structuralDiff, threeWayDiff } from './structuralDiff.js';
+import { structuralDiff } from './structuralDiff.js';
 import {
   appendEntry,
   changeNodeKind,
@@ -240,55 +240,35 @@ describe('diff a partir de operações de edição', () => {
   });
 });
 
-describe('threeWayDiff', () => {
-  const BASE = '{"a":1,"b":2,"c":3}';
+/**
+ * O que substituiu o diff de três vias.
+ *
+ * Quando há alteração externa, o editor oferece "comparar meu rascunho com a
+ * versão N": a base passa a ser a versão de fora e o diff normal de revisão
+ * assume o papel que a tela de três vias tinha. O que precisa continuar
+ * verdadeiro é que **o que eu reverteria da outra pessoa aparece** — senão
+ * gravar por cima seria sobrescrever às cegas com uma revisão que mentiu.
+ */
+describe('rebase sobre alteração externa', () => {
+  it('o diff contra a versão de fora mostra o que a minha edição reverteria', () => {
+    const theirs = parse('{"a":1,"b":"mudei-isto"}');
+    const mine = parse('{"a":42,"b":"original"}');
 
-  it('separa o que só eu mudei do que só o outro mudou', () => {
-    const diff = threeWayDiff(parse(BASE), parse('{"a":1,"b":99,"c":3}'), parse('{"a":42,"b":2,"c":3}'));
+    const changeSet = structuralDiff(theirs, mine);
+    const byLabel = new Map(changeSet.changes.map((change) => [change.label, change]));
 
-    const bySide = new Map(diff.changes.map((change) => [change.label, change.side]));
-
-    expect(bySide.get('/a')).toBe('mine');
-    expect(bySide.get('/b')).toBe('theirs');
+    // Minha alteração deliberada.
+    expect(byLabel.get('/a')?.after?.text).toBe('42');
+    // E a reversão do que a outra pessoa fez, visível antes de confirmar.
+    expect(byLabel.get('/b')?.before?.text).toBe('mudei-isto');
+    expect(byLabel.get('/b')?.after?.text).toBe('original');
   });
 
-  it('marca conflito quando os dois mudam o mesmo caminho', () => {
-    const diff = threeWayDiff(parse(BASE), parse('{"a":10,"b":2,"c":3}'), parse('{"a":20,"b":2,"c":3}'));
+  it('quando as mudanças são disjuntas, só a minha aparece', () => {
+    // A outra pessoa mexeu em /b; eu parti da versão dela, então /b não entra.
+    const theirs = parse('{"a":1,"b":99}');
+    const mine = parse('{"a":42,"b":99}');
 
-    expect(diff.changes.find((change) => change.label === '/a')?.side).toBe('both');
-    expect(diff.isMergeableWithoutConflict).toBe(false);
-  });
-
-  it('mudanças em caminhos distintos são mescláveis', () => {
-    const diff = threeWayDiff(parse(BASE), parse('{"a":1,"b":99,"c":3}'), parse('{"a":42,"b":2,"c":3}'));
-
-    expect(diff.isMergeableWithoutConflict).toBe(true);
-  });
-
-  it('traz os três lados de um conflito', () => {
-    const diff = threeWayDiff(
-      parse('{"a":"base"}'),
-      parse('{"a":"deles"}'),
-      parse('{"a":"meu"}'),
-    );
-    const change = diff.changes.find((candidate) => candidate.label === '/a');
-
-    expect(change?.base?.text).toBe('base');
-    expect(change?.current?.text).toBe('deles');
-    expect(change?.mine?.text).toBe('meu');
-  });
-
-  it('mudança idêntica dos dois lados ainda aparece como conflito de caminho', () => {
-    // Não tentamos adivinhar que "é a mesma coisa": o usuário decide.
-    const diff = threeWayDiff(parse('{"a":1}'), parse('{"a":2}'), parse('{"a":2}'));
-
-    expect(diff.changes.find((change) => change.label === '/a')?.side).toBe('both');
-  });
-
-  it('sem alteração externa, só aparece o meu lado', () => {
-    const diff = threeWayDiff(parse(BASE), parse(BASE), parse('{"a":42,"b":2,"c":3}'));
-
-    expect(diff.changes.map((change) => change.side)).toEqual(['mine']);
-    expect(diff.isMergeableWithoutConflict).toBe(true);
+    expect(structuralDiff(theirs, mine).changes.map((change) => change.label)).toEqual(['/a']);
   });
 });

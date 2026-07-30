@@ -1,9 +1,4 @@
-import type {
-  JsonDocument,
-  JsonNode,
-  JsonNodeKind,
-  ObjectEntry,
-} from './JsonDocument.js';
+import type { JsonDocument, JsonNode, JsonNodeKind } from './JsonDocument.js';
 import { createEntry, createNode, scalarText } from './JsonDocument.js';
 import type { EditPath } from './jsonPath.js';
 
@@ -345,14 +340,4 @@ function moveWithin<T>(list: T[], from: number, to: number): T[] | undefined {
   list.splice(to, 0, moved);
 
   return list;
-}
-
-/** Entradas de um objeto, ou lista vazia. Conveniência para a UI. */
-export function entriesOf(node: JsonNode): readonly ObjectEntry[] {
-  return node.kind === 'object' ? node.entries : [];
-}
-
-/** Itens de uma lista, ou lista vazia. Conveniência para a UI. */
-export function itemsOf(node: JsonNode): readonly JsonNode[] {
-  return node.kind === 'array' ? node.items : [];
 }

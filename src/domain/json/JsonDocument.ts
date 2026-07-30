@@ -28,16 +28,6 @@ export interface SourceSpan {
 
 export type JsonNodeKind = 'string' | 'number' | 'boolean' | 'null' | 'object' | 'array';
 
-/** Todos os tipos, na ordem em que aparecem na UI. */
-export const SELECTABLE_KINDS: readonly JsonNodeKind[] = [
-  'string',
-  'number',
-  'boolean',
-  'object',
-  'array',
-  'null',
-];
-
 /**
  * Tipos que o seletor da linha oferece.
  *
@@ -47,13 +37,6 @@ export const SELECTABLE_KINDS: readonly JsonNodeKind[] = [
  * fácil demais para uma ação destrutiva.
  */
 export const SCALAR_KINDS: readonly JsonNodeKind[] = ['string', 'number', 'boolean', 'null'];
-
-/** Tipos que agrupam filhos. Conversão para estes passa pelo menu. */
-export const CONTAINER_KINDS: readonly JsonNodeKind[] = ['object', 'array'];
-
-export function isScalarKind(kind: JsonNodeKind): boolean {
-  return SCALAR_KINDS.includes(kind);
-}
 
 interface NodeBase {
   /** Identidade estável para key do React e para reordenar sem remontar. */

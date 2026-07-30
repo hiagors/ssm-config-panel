@@ -1,14 +1,13 @@
 import { useMemo, useState } from 'react';
+import type { RestoreCandidate } from '../../application/BackupHistoryUseCase.js';
 import type { GetParameterResult } from '../../application/GetParameterUseCase.js';
 import type { ValidationIssue } from '../../application/validation/validateDocument.js';
 import { issuesByPath, validateDocument } from '../../application/validation/validateDocument.js';
 import { appendEntry, appendItem, moveEntry, moveItem } from '../../domain/json/editOperations.js';
-import { parseJsonDocument } from '../../domain/json/parseJsonDocument.js';
 import { prettyPrintDocument } from '../../domain/json/prettyPrint.js';
-import { structuralDiff, threeWayDiff } from '../../domain/json/structuralDiff.js';
+import { structuralDiff } from '../../domain/json/structuralDiff.js';
 import type { EditPath } from '../../domain/json/jsonPath.js';
 import { pathKey } from '../../domain/json/jsonPath.js';
-import ConflictView from './ConflictView.js';
 import DiffView from './DiffView.js';
 import { EditorProvider } from './EditorContext.js';
 import RawJsonEditor from './RawJsonEditor.js';
@@ -36,6 +35,12 @@ interface Props {
   readonly parameter: GetParameterResult;
   /** Profile em uso; vai em toda gravação, para a identidade nunca ser inferida. */
   readonly profileName?: string | undefined;
+  /**
+   * Backup carregado como rascunho inicial, quando se chega aqui por
+   * `?restore=`. A base continua sendo o valor atual do store: restaurar é uma
+   * edição, e passa pelo mesmo diff e pela mesma confirmação.
+   */
+  readonly restored?: RestoreCandidate | undefined;
 }
 
 type SavePhase =
@@ -54,11 +59,12 @@ type SavePhase =
   /** Token do SSO venceu. Banner não-bloqueante, rascunho intacto. */
   | { readonly phase: 'sessionExpired' };
 
-export default function ParameterEditor({ parameter, profileName }: Props) {
+export default function ParameterEditor({ parameter, profileName, restored }: Props) {
   const draft = useParameterDraft(
     parameter.value,
     parameter.metadata.version,
     parameter.isSecret,
+    restored?.value,
   );
 
   const [save, setSave] = useState<SavePhase>({ phase: 'editing' });
@@ -161,17 +167,6 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
     }
     return structuralDiff(draft.baseDocument, document);
   }, [draft.baseDocument, document]);
-
-  const conflictDiff = useMemo(() => {
-    if (save.phase !== 'conflict' || document === undefined || draft.baseDocument === undefined) {
-      return undefined;
-    }
-    const current = parseJsonDocument(save.currentValue);
-    if (!current.ok) {
-      return undefined;
-    }
-    return threeWayDiff(draft.baseDocument, current.document, document);
-  }, [save, draft.baseDocument, document]);
 
   const canReview =
     draft.isDirty &&
@@ -313,25 +308,64 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
         </div>
       )}
 
+      {restored !== undefined && (
+        <div className="notice">
+          <p>
+            <strong>Rascunho carregado do backup da versão {restored.version}</strong>, gravado em{' '}
+            {formatInstant(restored.savedAt)}. Nada foi restaurado ainda.
+          </p>
+          <p className="muted">
+            Revisar e salvar grava este valor sobre a{' '}
+            <strong>versão {state.base.version}</strong>, que é a atual no store — e a versão atual
+            vai para <code>./.backups</code> antes, então este rollback também tem volta. O diff
+            abaixo mostra exatamente o que muda.
+          </p>
+        </div>
+      )}
+
       {save.phase === 'conflict' && (
-        <ConflictView
-          parameterName={parameter.metadata.name}
-          baseVersion={state.base.version}
-          currentVersion={save.currentVersion}
-          diff={
-            conflictDiff ?? { changes: [], isMergeableWithoutConflict: true }
-          }
-          isSecret={parameter.isSecret}
-          onCancel={() => setSave({ phase: 'editing' })}
-          onRebaseOnCurrent={() => {
-            draft.rebase(save.currentValue, save.currentVersion);
-            setSave({ phase: 'editing' });
-          }}
-          onDiscardMine={() => {
-            draft.reload(save.currentValue, save.currentVersion);
-            setSave({ phase: 'editing' });
-          }}
-        />
+        <div className="notice error">
+          <p>
+            <strong>Alteração externa detectada.</strong> O parâmetro está na{' '}
+            <strong>versão {save.currentVersion}</strong>, mas esta edição partiu da{' '}
+            {state.base.version}. <strong>Nada foi gravado</strong>, e seu rascunho está intacto.
+          </p>
+
+          <div className="review-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setSave({ phase: 'editing' })}
+            >
+              Continuar editando
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                // Adota a versão de fora como base, mantendo o rascunho. O diff
+                // da revisão passa a ser "minha edição contra a versão dela",
+                // então o que eu reverteria dela aparece na tela antes de
+                // qualquer gravação. É o que substitui o diff de três vias: em
+                // vez de uma tela própria comparando três lados, o conflito
+                // volta para o fluxo normal de revisão.
+                draft.rebase(save.currentValue, save.currentVersion);
+                setSave({ phase: 'editing' });
+              }}
+            >
+              Comparar meu rascunho com a versão {save.currentVersion}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                draft.reload(save.currentValue, save.currentVersion);
+                setSave({ phase: 'editing' });
+              }}
+            >
+              Descartar meu rascunho e recarregar
+            </button>
+          </div>
+        </div>
       )}
 
       {save.phase === 'reviewing' && (
@@ -372,7 +406,7 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
         </div>
       )}
 
-      {save.phase !== 'reviewing' && save.phase !== 'conflict' && (
+      {save.phase !== 'reviewing' && (
         <>
           <nav className="tabs" role="tablist">
             <button
@@ -496,6 +530,15 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
       )}
     </section>
   );
+}
+
+/** Data local legível para o aviso de rollback. */
+function formatInstant(savedAt: string): string {
+  const instant = new Date(savedAt);
+
+  return Number.isNaN(instant.getTime())
+    ? savedAt
+    : instant.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' });
 }
 
 /** Explica por que o botão está desabilitado, em vez de só ficar cinza. */

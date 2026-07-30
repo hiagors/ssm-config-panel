@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -15,12 +15,27 @@ async function makeAdapter(): Promise<{ adapter: LocalFileStoreAdapter; root: st
   return { adapter: new LocalFileStoreAdapter(root), root };
 }
 
+/** Nome do arquivo de um parâmetro, na convenção do adapter. */
+function fileFor(root: string, name: string): string {
+  return join(root, `${name.slice(1).split('/').join('#').toLowerCase()}.json`);
+}
+
+/** Escreve um envelope à mão, para testar leitura sem passar pelo `put`. */
+async function writeEnvelope(
+  root: string,
+  name: string,
+  envelope: Record<string, unknown>,
+): Promise<void> {
+  await writeFile(fileFor(root, name), JSON.stringify(envelope), { mode: 0o600 });
+}
+
+const STANDARD = { type: 'String', tier: 'Standard' } as const;
+
 describe('LocalFileStoreAdapter — get', () => {
   it('lê o valor exatamente como está no arquivo', async () => {
     const { adapter, root } = await makeAdapter();
     const raw = '{\n  "b": 1,\n  "a": 2\n}\n';
-    await mkdir(join(root, 'example'), { recursive: true });
-    await writeFile(join(root, 'example', 'demo.json'), raw);
+    await writeEnvelope(root, '/example/demo', { name: '/example/demo', value: raw });
 
     const parameter = await adapter.get('/example/demo');
 
@@ -34,9 +49,9 @@ describe('LocalFileStoreAdapter — get', () => {
     await expect(adapter.get('/example/ausente')).rejects.toThrow(ParameterNotFoundError);
   });
 
-  it('assume defaults do SSM sem o sidecar', async () => {
+  it('assume defaults do SSM quando o envelope só tem name e value', async () => {
     const { adapter, root } = await makeAdapter();
-    await writeFile(join(root, 'demo.json'), '{}');
+    await writeEnvelope(root, '/demo', { name: '/demo', value: '{}' });
 
     const { metadata } = await adapter.get('/demo');
 
@@ -45,18 +60,16 @@ describe('LocalFileStoreAdapter — get', () => {
     expect(metadata.version).toBe(1);
   });
 
-  it('respeita o sidecar de metadados', async () => {
+  it('respeita os metadados do envelope', async () => {
     const { adapter, root } = await makeAdapter();
-    await writeFile(join(root, 'demo.json'), '{}');
-    await writeFile(
-      join(root, 'demo.meta.json'),
-      JSON.stringify({
-        type: 'SecureString',
-        tier: 'Advanced',
-        keyId: 'alias/aws/ssm',
-        version: 7,
-      }),
-    );
+    await writeEnvelope(root, '/demo', {
+      name: '/demo',
+      type: 'SecureString',
+      tier: 'Advanced',
+      keyId: 'alias/aws/ssm',
+      version: 7,
+      value: '{}',
+    });
 
     const { metadata } = await adapter.get('/demo');
 
@@ -66,10 +79,14 @@ describe('LocalFileStoreAdapter — get', () => {
     expect(metadata.version).toBe(7);
   });
 
-  it('ignora campo inválido no sidecar em vez de quebrar', async () => {
+  it('ignora campo de metadado inválido em vez de quebrar', async () => {
     const { adapter, root } = await makeAdapter();
-    await writeFile(join(root, 'demo.json'), '{}');
-    await writeFile(join(root, 'demo.meta.json'), JSON.stringify({ type: 'Nonsense', version: -3 }));
+    await writeEnvelope(root, '/demo', {
+      name: '/demo',
+      type: 'Nonsense',
+      version: -3,
+      value: '{}',
+    });
 
     const { metadata } = await adapter.get('/demo');
 
@@ -77,11 +94,10 @@ describe('LocalFileStoreAdapter — get', () => {
     expect(metadata.version).toBe(1);
   });
 
-  it('erro de sidecar corrompido não expõe o conteúdo do arquivo', async () => {
+  it('erro de arquivo corrompido não expõe o conteúdo do arquivo', async () => {
     const { adapter, root } = await makeAdapter();
-    const sentinel = 'SENTINEL-no-sidecar-4d1c';
-    await writeFile(join(root, 'demo.json'), '{}');
-    await writeFile(join(root, 'demo.meta.json'), `{"keyId": "${sentinel}"`);
+    const sentinel = 'SENTINEL-no-arquivo-4d1c';
+    await writeFile(fileFor(root, '/demo'), `{"value": "${sentinel}"`);
 
     await expect(adapter.get('/demo')).rejects.toThrow(
       expect.objectContaining({
@@ -89,49 +105,65 @@ describe('LocalFileStoreAdapter — get', () => {
       }),
     );
   });
+
+  it('arquivo sem name nem value é tratado como ausente, não como parâmetro vazio', async () => {
+    const { adapter, root } = await makeAdapter();
+    await writeFile(fileFor(root, '/demo'), '{"qualquer":"coisa"}');
+
+    await expect(adapter.get('/demo')).rejects.toThrow(ParameterNotFoundError);
+  });
 });
 
 describe('LocalFileStoreAdapter — put', () => {
-  it('grava o valor sem envelope e cria o sidecar ao lado', async () => {
+  it('grava um arquivo plano com valor e metadados juntos', async () => {
     const { adapter, root } = await makeAdapter();
     const value = '{"a":1}';
 
     const result = await adapter.put('/example/demo/env', value, {
-      type: 'String',
-      tier: 'Standard',
+      ...STANDARD,
       expectedVersion: 0,
     });
 
     expect(result.version).toBe(1);
-    expect(await readFile(join(root, 'example', 'demo', 'env.json'), 'utf8')).toBe(value);
 
-    const meta = JSON.parse(
-      await readFile(join(root, 'example', 'demo', 'env.meta.json'), 'utf8'),
+    const envelope = JSON.parse(
+      await readFile(join(root, 'example#demo#env.json'), 'utf8'),
     ) as Record<string, unknown>;
-    expect(meta['type']).toBe('String');
-    expect(meta['version']).toBe(1);
+
+    expect(envelope['name']).toBe('/example/demo/env');
+    expect(envelope['value']).toBe(value);
+    expect(envelope['type']).toBe('String');
+    expect(envelope['version']).toBe(1);
+  });
+
+  it('não cria diretórios: a hierarquia do name vira nome de arquivo', async () => {
+    const { adapter, root } = await makeAdapter();
+
+    await adapter.put('/a/b/c/d', '{}', { ...STANDARD, expectedVersion: 0 });
+
+    expect(await readFile(join(root, 'a#b#c#d.json'), 'utf8')).toContain('"/a/b/c/d"');
   });
 
   it('cria arquivos com permissão 0600', async () => {
     const { adapter, root } = await makeAdapter();
 
-    await adapter.put('/example/demo', '{}', { type: 'SecureString', tier: 'Standard', keyId: 'alias/aws/ssm', expectedVersion: 0 });
+    await adapter.put('/example/demo', '{}', {
+      type: 'SecureString',
+      tier: 'Standard',
+      keyId: 'alias/aws/ssm',
+      expectedVersion: 0,
+    });
 
-    const valueMode = (await stat(join(root, 'example', 'demo.json'))).mode & 0o777;
-    const metaMode = (await stat(join(root, 'example', 'demo.meta.json'))).mode & 0o777;
-
-    expect(valueMode).toBe(0o600);
-    expect(metaMode).toBe(0o600);
+    expect((await stat(join(root, 'example#demo.json'))).mode & 0o777).toBe(0o600);
   });
 
-  it('cria diretórios com permissão 0700', async () => {
-    const { adapter, root } = await makeAdapter();
+  it('cria o diretório do store com permissão 0700', async () => {
+    const root = join(await mkdtemp(join(tmpdir(), 'ssm-root-')), 'store');
+    const adapter = new LocalFileStoreAdapter(root);
 
-    await adapter.put('/example/demo', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/example/demo', '{}', { ...STANDARD, expectedVersion: 0 });
 
-    const dirMode = (await stat(join(root, 'example'))).mode & 0o777;
-
-    expect(dirMode).toBe(0o700);
+    expect((await stat(root)).mode & 0o777).toBe(0o700);
   });
 
   it('incrementa a versão a cada gravação', async () => {
@@ -140,12 +172,10 @@ describe('LocalFileStoreAdapter — put', () => {
     // Cada gravação declara a versão de que partiu: 0 para criar, 1 para
     // sobrescrever a versão 1.
     expect(
-      (await adapter.put('/demo', '{"v":1}', { type: 'String', tier: 'Standard', expectedVersion: 0 }))
-        .version,
+      (await adapter.put('/demo', '{"v":1}', { ...STANDARD, expectedVersion: 0 })).version,
     ).toBe(1);
     expect(
-      (await adapter.put('/demo', '{"v":2}', { type: 'String', tier: 'Standard', expectedVersion: 1 }))
-        .version,
+      (await adapter.put('/demo', '{"v":2}', { ...STANDARD, expectedVersion: 1 })).version,
     ).toBe(2);
     expect((await adapter.get('/demo')).value).toBe('{"v":2}');
   });
@@ -160,8 +190,7 @@ describe('LocalFileStoreAdapter — put', () => {
       expectedVersion: 0,
     });
     await adapter.put('/comum', '{}', {
-      type: 'String',
-      tier: 'Standard',
+      ...STANDARD,
       keyId: 'alias/minha-chave',
       expectedVersion: 0,
     });
@@ -173,53 +202,56 @@ describe('LocalFileStoreAdapter — put', () => {
   it('não deixa arquivo temporário para trás', async () => {
     const { adapter } = await makeAdapter();
 
-    await adapter.put('/demo', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/demo', '{}', { ...STANDARD, expectedVersion: 0 });
 
     expect(await adapter.list()).toHaveLength(1);
   });
 });
 
 describe('LocalFileStoreAdapter — list', () => {
-  it('exclui sidecars .meta.json', async () => {
+  it('lista os parâmetros gravados', async () => {
     const { adapter } = await makeAdapter();
-    await adapter.put('/example/a', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
-    await adapter.put('/example/b', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/example/a', '{}', { ...STANDARD, expectedVersion: 0 });
+    await adapter.put('/example/b', '{}', { ...STANDARD, expectedVersion: 0 });
 
-    const names = (await adapter.list()).map((m) => m.name);
-
-    // Dois parâmetros geram quatro arquivos; só dois são parâmetros.
-    expect(names).toEqual(['/example/a', '/example/b']);
+    expect((await adapter.list()).map((m) => m.name)).toEqual(['/example/a', '/example/b']);
   });
 
   it('ignora arquivo que não é .json', async () => {
     const { adapter, root } = await makeAdapter();
     await writeFile(join(root, 'README.txt'), 'anotação');
-    await adapter.put('/demo', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/demo', '{}', { ...STANDARD, expectedVersion: 0 });
 
     expect((await adapter.list()).map((m) => m.name)).toEqual(['/demo']);
   });
 
-  it('desce a hierarquia recursivamente', async () => {
+  it('ignora .json que não é envelope de parâmetro', async () => {
+    const { adapter, root } = await makeAdapter();
+    await writeFile(join(root, 'anotacao.json'), '{"lembrete":"isto nao e um parametro"}');
+    await adapter.put('/demo', '{}', { ...STANDARD, expectedVersion: 0 });
+
+    expect((await adapter.list()).map((m) => m.name)).toEqual(['/demo']);
+  });
+
+  it('devolve o name completo, com a hierarquia', async () => {
     const { adapter } = await makeAdapter();
-    await adapter.put('/a/b/c/d', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/a/b/c/d', '{}', { ...STANDARD, expectedVersion: 0 });
 
     expect((await adapter.list()).map((m) => m.name)).toEqual(['/a/b/c/d']);
   });
 
   it('filtra por prefixo de path', async () => {
     const { adapter } = await makeAdapter();
-    await adapter.put('/prod/env', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
-    await adapter.put('/staging/env', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/prod/env', '{}', { ...STANDARD, expectedVersion: 0 });
+    await adapter.put('/staging/env', '{}', { ...STANDARD, expectedVersion: 0 });
 
-    const names = (await adapter.list({ pathPrefix: '/prod' })).map((m) => m.name);
-
-    expect(names).toEqual(['/prod/env']);
+    expect((await adapter.list({ pathPrefix: '/prod' })).map((m) => m.name)).toEqual(['/prod/env']);
   });
 
   it('com recursive=false não desce além de um nível', async () => {
     const { adapter } = await makeAdapter();
-    await adapter.put('/prod/env', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
-    await adapter.put('/prod/billing/env', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/prod/env', '{}', { ...STANDARD, expectedVersion: 0 });
+    await adapter.put('/prod/billing/env', '{}', { ...STANDARD, expectedVersion: 0 });
 
     const names = (await adapter.list({ pathPrefix: '/prod', recursive: false })).map((m) => m.name);
 
@@ -232,25 +264,24 @@ describe('LocalFileStoreAdapter — list', () => {
     expect(await adapter.list()).toEqual([]);
   });
 
-  it('não carrega valor nenhum', async () => {
+  it('não devolve valor nenhum, mesmo lendo o arquivo inteiro', async () => {
     const { adapter } = await makeAdapter();
-    await adapter.put('/demo', '{"segredo":"nao-deve-vazar"}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/demo', '{"segredo":"nao-deve-vazar"}', {
+      ...STANDARD,
+      expectedVersion: 0,
+    });
 
-    const listed = await adapter.list();
-
-    expect(JSON.stringify(listed)).not.toContain('nao-deve-vazar');
+    // O arquivo é lido do disco para pegar os metadados, mas `list()` devolve
+    // somente metadados: nada do valor pode aparecer no resultado.
+    expect(JSON.stringify(await adapter.list())).not.toContain('nao-deve-vazar');
   });
 });
 
 describe('LocalFileStoreAdapter — contrato de expectedVersion', () => {
-  const STANDARD = { type: 'String', tier: 'Standard' } as const;
-
   it('expectedVersion 0 cria quando não existe', async () => {
     const { adapter } = await makeAdapter();
 
-    const result = await adapter.put('/novo', '{}', { ...STANDARD, expectedVersion: 0 });
-
-    expect(result.version).toBe(1);
+    expect((await adapter.put('/novo', '{}', { ...STANDARD, expectedVersion: 0 })).version).toBe(1);
   });
 
   it('expectedVersion 0 recusa quando já existe', async () => {
@@ -267,11 +298,11 @@ describe('LocalFileStoreAdapter — contrato de expectedVersion', () => {
     // original não há Type, Tier nem KeyId de onde herdar.
     const { adapter, root } = await makeAdapter();
 
-    await expect(
-      adapter.put('/ausente', '{}', { ...STANDARD, expectedVersion: 1 }),
-    ).rejects.toThrow(ParameterNotFoundError);
+    await expect(adapter.put('/ausente', '{}', { ...STANDARD, expectedVersion: 1 })).rejects.toThrow(
+      ParameterNotFoundError,
+    );
 
-    await expect(readFile(join(root, 'ausente.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(fileFor(root, '/ausente'), 'utf8')).rejects.toThrow();
   });
 
   it('expectedVersion divergente aborta e NÃO grava', async () => {
@@ -285,7 +316,11 @@ describe('LocalFileStoreAdapter — contrato de expectedVersion', () => {
     ).rejects.toThrow(VersionMismatchError);
 
     // A prova de que nada foi tocado no disco.
-    expect(await readFile(join(root, 'p.json'), 'utf8')).toBe('{"segunda":true}');
+    const envelope = JSON.parse(await readFile(fileFor(root, '/p'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(envelope['value']).toBe('{"segunda":true}');
     expect((await adapter.get('/p')).metadata.version).toBe(2);
   });
 
@@ -296,15 +331,15 @@ describe('LocalFileStoreAdapter — contrato de expectedVersion', () => {
 
     // `toThrow` casa com `error.message`, que é a mensagem interna em inglês,
     // para desenvolvedor. O que chega ao usuário é a `publicMessage`.
-    await expect(
-      adapter.put('/p', '{}', { ...STANDARD, expectedVersion: 1 }),
-    ).rejects.toMatchObject({
-      code: 'VERSION_MISMATCH',
-      httpStatus: 409,
-      expectedVersion: 1,
-      currentVersion: 2,
-      publicMessage: expect.stringContaining('Nada foi sobrescrito'),
-    });
+    await expect(adapter.put('/p', '{}', { ...STANDARD, expectedVersion: 1 })).rejects.toMatchObject(
+      {
+        code: 'VERSION_MISMATCH',
+        httpStatus: 409,
+        expectedVersion: 1,
+        currentVersion: 2,
+        publicMessage: expect.stringContaining('Nada foi sobrescrito'),
+      },
+    );
   });
 
   it('expectedVersion correto grava e incrementa', async () => {
@@ -321,40 +356,62 @@ describe('LocalFileStoreAdapter — contrato de expectedVersion', () => {
     const { adapter } = await makeAdapter();
     await adapter.put('/p', '{}', { ...STANDARD, expectedVersion: 0 });
 
-    await expect(
-      adapter.put('/p', '{}', { ...STANDARD, expectedVersion: 99 }),
-    ).rejects.toThrow(VersionMismatchError);
+    await expect(adapter.put('/p', '{}', { ...STANDARD, expectedVersion: 99 })).rejects.toThrow(
+      VersionMismatchError,
+    );
 
     expect(await adapter.list()).toHaveLength(1);
   });
 });
 
 describe('LocalFileStoreAdapter — colisão de caixa', () => {
+  /**
+   * O `name` dentro do arquivo é o que decide de quem o arquivo é.
+   *
+   * O nome do arquivo é minúsculo de propósito, então `/prod/ENV` e `/prod/env`
+   * resolvem para o mesmo arquivo em **qualquer** sistema de arquivos — e a
+   * comparação de `name` acusa a diferença. No SSM os dois são parâmetros
+   * distintos; devolver um no lugar do outro seria erro sem sinal.
+   */
   it('get com caixa diferente falha em vez de devolver o parâmetro errado', async () => {
     const { adapter } = await makeAdapter();
-    await adapter.put('/prod/env', '{"correto":true}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/prod/env', '{"correto":true}', { ...STANDARD, expectedVersion: 0 });
 
     await expect(adapter.get('/prod/ENV')).rejects.toThrow(ParameterNameCollisionError);
   });
 
   it('put com caixa diferente falha em vez de sobrescrever', async () => {
     const { adapter, root } = await makeAdapter();
-    await adapter.put('/prod/env', '{"original":true}', { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/prod/env', '{"original":true}', { ...STANDARD, expectedVersion: 0 });
 
     await expect(
-      adapter.put('/prod/ENV', '{"invasor":true}', { type: 'String', tier: 'Standard', expectedVersion: 0 }),
+      adapter.put('/prod/ENV', '{"invasor":true}', { ...STANDARD, expectedVersion: 0 }),
     ).rejects.toThrow(ParameterNameCollisionError);
 
     // O original tem de continuar intacto.
-    expect(await readFile(join(root, 'prod', 'env.json'), 'utf8')).toBe('{"original":true}');
+    const envelope = JSON.parse(await readFile(fileFor(root, '/prod/env'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(envelope['value']).toBe('{"original":true}');
+  });
+
+  it('a mensagem de colisão diz qual name já ocupa o arquivo', async () => {
+    const { adapter } = await makeAdapter();
+    await adapter.put('/prod/env', '{}', { ...STANDARD, expectedVersion: 0 });
+
+    await expect(adapter.get('/PROD/env')).rejects.toMatchObject({
+      code: 'PARAMETER_NAME_COLLISION',
+      publicMessage: expect.stringContaining('/prod/env'),
+    });
   });
 });
 
 describe('LocalFileStoreAdapter — round-trip', () => {
   it('put seguido de get devolve exatamente o mesmo texto', async () => {
     const { adapter } = await makeAdapter();
-    // Casos que o serializador da Fase 2 precisa preservar: ordem das
-    // chaves, int vs float, null vs string vazia, array heterogêneo.
+    // Casos que o serializador precisa preservar: ordem das chaves, int vs
+    // float, null vs string vazia, array heterogêneo.
     const value = JSON.stringify(
       {
         z_primeira: 'ordem preservada',
@@ -370,7 +427,7 @@ describe('LocalFileStoreAdapter — round-trip', () => {
       2,
     );
 
-    await adapter.put('/example/roundtrip', value, { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/example/roundtrip', value, { ...STANDARD, expectedVersion: 0 });
 
     expect((await adapter.get('/example/roundtrip')).value).toBe(value);
   });
@@ -379,8 +436,11 @@ describe('LocalFileStoreAdapter — round-trip', () => {
     const { adapter } = await makeAdapter();
     const value = '{"a":null,"b":""}';
 
-    await adapter.put('/example/nulos', value, { type: 'String', tier: 'Standard', expectedVersion: 0 });
-    const parsed = JSON.parse((await adapter.get('/example/nulos')).value) as Record<string, unknown>;
+    await adapter.put('/example/nulos', value, { ...STANDARD, expectedVersion: 0 });
+    const parsed = JSON.parse((await adapter.get('/example/nulos')).value) as Record<
+      string,
+      unknown
+    >;
 
     expect(parsed['a']).toBeNull();
     expect(parsed['b']).toBe('');
@@ -390,8 +450,18 @@ describe('LocalFileStoreAdapter — round-trip', () => {
     const { adapter } = await makeAdapter();
     const value = 'isto nao e json { mesmo';
 
-    await adapter.put('/example/cru', value, { type: 'String', tier: 'Standard', expectedVersion: 0 });
+    await adapter.put('/example/cru', value, { ...STANDARD, expectedVersion: 0 });
 
     expect((await adapter.get('/example/cru')).value).toBe(value);
+  });
+
+  it('valor com quebra de linha e aspas sobrevive ao envelope', async () => {
+    const { adapter } = await makeAdapter();
+    // O valor agora mora dentro de um JSON, então precisa de escape correto.
+    const value = '{\n  "frase": "ele disse \\"oi\\"",\n  "tab": "a\\tb"\n}';
+
+    await adapter.put('/example/escapes', value, { ...STANDARD, expectedVersion: 0 });
+
+    expect((await adapter.get('/example/escapes')).value).toBe(value);
   });
 });

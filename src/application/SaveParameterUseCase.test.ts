@@ -112,6 +112,16 @@ class FakeBackup implements BackupPort {
   async list(): Promise<readonly []> {
     return [];
   }
+
+  /**
+   * O save nunca lê backup — quem lê é o fluxo de rollback, e ele entra pelo
+   * editor, não por aqui. Falhar alto se alguém passar a chamar: seria sinal de
+   * que "restaurar" ganhou um caminho de escrita próprio, que é justamente o que
+   * o desenho evita.
+   */
+  async read(): Promise<never> {
+    throw new Error('SaveParameterUseCase não deve ler backup');
+  }
 }
 
 describe('SaveParameterUseCase — caminho felizes', () => {
@@ -201,7 +211,7 @@ describe('SaveParameterUseCase — lost update', () => {
     expect(store.putCalls).toEqual([]);
   });
 
-  it('o conflito carrega o valor atual, que o diff de três vias precisa', async () => {
+  it('o conflito carrega o valor atual, que o rebase do editor precisa', async () => {
     const store = FakeStore.with({ version: 5 }, '{"deles":true}');
 
     const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
@@ -389,7 +399,7 @@ describe('SaveParameterUseCase — nada vaza valor', () => {
   });
 
   it('o conflito CARREGA o valor atual — de propósito', async () => {
-    // Não é vazamento: é o payload que o diff de três vias precisa, servido em
+    // Não é vazamento: é o payload de que o editor precisa para rebasear, servido em
     // loopback com `no-store`. A garantia é que ele não passa pelo error
     // mapper, e que o valor nunca entra em objeto de erro nem em log. Este
     // teste documenta a intenção para ninguém "consertar" isso depois.

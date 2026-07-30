@@ -26,10 +26,10 @@ export type AppErrorCode =
   | 'SSO_LOGIN_FAILED'
   | 'AWS_ACCESS_DENIED'
   | 'AWS_REQUEST_FAILED'
-  | 'WRITE_NOT_ENABLED'
+  | 'PARAMETER_CREATION_NOT_SUPPORTED'
   | 'BACKUP_FAILED'
+  | 'BACKUP_NOT_FOUND'
   | 'STORE_UNAVAILABLE'
-  | 'STORE_DRIVER_NOT_IMPLEMENTED'
   | 'INTERNAL_ERROR';
 
 /**
@@ -128,8 +128,8 @@ export class ParameterNameCollisionError extends AppError {
  *
  * Lançado pelo adapter, o mais perto possível da escrita. O use case de save
  * traduz isso em resultado de conflito — não em erro para o cliente — porque o
- * diff de três vias precisa do valor atual, e o error mapper redige por
- * padrão. Ver `SaveParameterUseCase`.
+ * editor precisa do valor atual para rebasear e recomparar, e o error mapper
+ * redige por padrão. Ver `SaveParameterUseCase`.
  */
 export class VersionMismatchError extends AppError {
   readonly code = 'VERSION_MISMATCH' as const;
@@ -288,22 +288,24 @@ export class AwsRequestFailedError extends AppError {
 }
 
 /**
- * Escrita ainda não habilitada no driver `aws`.
+ * Pedido de **criar** um parâmetro que ainda não existe.
  *
- * O adapter nasce somente-leitura de propósito: nenhuma escrita em SSM real
- * antes de existir backup. Falhar explicitamente é melhor que gravar sem rede
- * de proteção.
+ * A gravação em SSM real está habilitada; o que não existe é criação. Criar
+ * exige escolha consciente de `Type`, `Tier` e `KeyId`, e ficou fora de escopo
+ * por decisão — nunca como efeito colateral de um save, que é o que
+ * `PutParameter` com `Overwrite: true` faria.
  */
-export class WriteNotEnabledError extends AppError {
-  readonly code = 'WRITE_NOT_ENABLED' as const;
+export class ParameterCreationNotSupportedError extends AppError {
+  readonly code = 'PARAMETER_CREATION_NOT_SUPPORTED' as const;
   readonly httpStatus = 501;
   readonly publicMessage: string;
 
   constructor(readonly parameterName: string) {
-    super(`write not enabled on aws driver: ${parameterName}`);
+    super(`parameter creation not supported: ${parameterName}`);
     this.publicMessage =
-      `A gravação no SSM real ainda não está habilitada. O adapter da AWS é somente-leitura até ` +
-      `o backup local existir — nenhuma escrita em conta real sem rede de proteção.`;
+      `Criar parâmetro não é suportado por esta ferramenta: ela edita parâmetros que já existem. ` +
+      `Crie ${parameterName} pelo console ou pela CLI da AWS, escolhendo Type, Tier e KeyId, e ` +
+      `depois volte aqui para editar.`;
   }
 }
 
@@ -331,6 +333,30 @@ export class BackupFailedError extends AppError {
   }
 }
 
+/**
+ * O backup pedido não existe.
+ *
+ * Acontece de forma legítima: a retenção pode ter podado o arquivo entre a
+ * listagem e o clique em restaurar. Também cobre o caso de o arquivo pertencer a
+ * outro parâmetro que colidiu por caixa — restaurar o valor errado seria o pior
+ * desfecho possível num rollback, então tratamos como ausência.
+ */
+export class BackupNotFoundError extends AppError {
+  readonly code = 'BACKUP_NOT_FOUND' as const;
+  readonly httpStatus = 404;
+  readonly publicMessage: string;
+
+  constructor(
+    readonly parameterName: string,
+    readonly savedAt: string,
+  ) {
+    super(`backup not found for ${parameterName} at ${savedAt}`);
+    this.publicMessage =
+      `O backup de ${parameterName} com data ${savedAt} não está mais em ./.backups. ` +
+      `A retenção pode tê-lo apagado. Volte à lista de backups e escolha outro.`;
+  }
+}
+
 export class StoreUnavailableError extends AppError {
   readonly code = 'STORE_UNAVAILABLE' as const;
   readonly httpStatus = 503;
@@ -339,19 +365,6 @@ export class StoreUnavailableError extends AppError {
   constructor(detail: string, publicMessage: string) {
     super(`store unavailable: ${detail}`);
     this.publicMessage = publicMessage;
-  }
-}
-
-export class StoreDriverNotImplementedError extends AppError {
-  readonly code = 'STORE_DRIVER_NOT_IMPLEMENTED' as const;
-  readonly httpStatus = 501;
-  readonly publicMessage: string;
-
-  constructor(readonly driver: string) {
-    super(`store driver not implemented: ${driver}`);
-    this.publicMessage =
-      `O driver de store "${driver}" ainda não foi implementado. ` +
-      `Use STORE_DRIVER=local até a Fase 3.`;
   }
 }
 

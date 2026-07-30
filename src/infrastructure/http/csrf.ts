@@ -18,9 +18,18 @@
  *    reconhece: nesse ataque o `Host` chega como `evil.com`.
  *
  * O Astro tem `security.checkOrigin`, que cobre o item 1 para rotas não-GET.
- * Mantemos os dois aqui porque o item 2 ele não cobre, porque queremos a mesma
- * regra em dev e em produção, e porque a mensagem de erro precisa ser nossa e
- * já redigida.
+ * Mantemos a checagem aqui de todo modo porque o item 2 ele não cobre, porque
+ * queremos a mesma regra em dev e em produção, e porque a mensagem de erro
+ * precisa ser nossa e já redigida.
+ *
+ * ── O que saiu, e por quê ───────────────────────────────────────────────────
+ *
+ * Havia também checagem de `Sec-Fetch-Site`, comparação de porta no `Host` e um
+ * parser de `host:porta` escrito à mão para dar conta de `[::1]:4321`. Os três
+ * saíram: `Sec-Fetch-Site` é redundante com a checagem de `Origin` que já
+ * acontece logo abaixo; a porta do `Host` não protege de nada (a requisição já
+ * chegou nesta porta, seja o que o cabeçalho disser); e o parsing manual virou
+ * uma linha de `new URL`, que já entende IPv6 entre colchetes.
  */
 
 import { ForbiddenOriginError } from '../../domain/errors.js';
@@ -29,10 +38,10 @@ import { ForbiddenOriginError } from '../../domain/errors.js';
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Nomes de host aceitos. Endereço de loopback e o nome reservado dele. */
-const ALLOWED_HOSTNAMES: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+const ALLOWED_HOSTNAMES: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 export interface OriginPolicy {
-  /** Porta em que o servidor escuta. Requisição para outra porta é recusada. */
+  /** Porta em que o servidor escuta. Origem de outra porta é recusada. */
   readonly port: number;
 }
 
@@ -53,54 +62,32 @@ export function originPolicyFromEnvironment(
  * decriptado sai.
  */
 export function assertRequestIsTrusted(request: Request, policy: OriginPolicy): void {
-  assertHostIsTrusted(request, policy);
+  assertHostIsTrusted(request);
 
   if (!SAFE_METHODS.has(request.method.toUpperCase())) {
     assertOriginIsTrusted(request, policy);
   }
 }
 
-/** Versão sem exceção, para teste e para uso condicional. */
-export function checkRequestIsTrusted(
-  request: Request,
-  policy: OriginPolicy,
-): { trusted: true } | { trusted: false; reason: string } {
-  try {
-    assertRequestIsTrusted(request, policy);
-    return { trusted: true };
-  } catch (error) {
-    return {
-      trusted: false,
-      reason: error instanceof ForbiddenOriginError ? error.reason : 'motivo desconhecido',
-    };
-  }
-}
-
 /**
- * O `Host` precisa ser um nome de loopback na porta esperada.
+ * O `Host` precisa ser um nome de loopback.
  *
  * É esta checagem que quebra o DNS rebinding: o browser envia
  * `Host: evil.com`, e `evil.com` não está na lista.
  */
-function assertHostIsTrusted(request: Request, policy: OriginPolicy): void {
+function assertHostIsTrusted(request: Request): void {
   const host = request.headers.get('host');
 
   if (host === null || host === '') {
     throw new ForbiddenOriginError('a requisição não informou o cabeçalho Host');
   }
 
-  const { hostname, port } = splitHost(host);
-
-  if (!ALLOWED_HOSTNAMES.has(hostname)) {
+  if (!ALLOWED_HOSTNAMES.has(hostnameOf(host))) {
     // Não interpolamos o hostname recebido para não refletir texto do atacante
     // de volta numa página de erro.
     throw new ForbiddenOriginError(
       'o cabeçalho Host não é um endereço de loopback conhecido (possível DNS rebinding)',
     );
-  }
-
-  if (port !== undefined && port !== policy.port) {
-    throw new ForbiddenOriginError('o cabeçalho Host aponta para uma porta diferente da do servidor');
   }
 }
 
@@ -112,14 +99,6 @@ function assertHostIsTrusted(request: Request, policy: OriginPolicy): void {
  * forjada, e nenhum dos dois tem por que gravar aqui.
  */
 function assertOriginIsTrusted(request: Request, policy: OriginPolicy): void {
-  // Quando o browser manda, `Sec-Fetch-Site` é o sinal mais direto e não é
-  // forjável por script.
-  const fetchSite = request.headers.get('sec-fetch-site');
-
-  if (fetchSite !== null && fetchSite !== 'same-origin' && fetchSite !== 'none') {
-    throw new ForbiddenOriginError('a requisição veio de outro site');
-  }
-
   const origin = request.headers.get('origin');
 
   if (origin === null || origin === '') {
@@ -139,38 +118,26 @@ function assertOriginIsTrusted(request: Request, policy: OriginPolicy): void {
     throw new ForbiddenOriginError('a origem da requisição não é loopback');
   }
 
-  const originPort = parsed.port === '' ? defaultPortFor(parsed.protocol) : Number(parsed.port);
+  const port = parsed.port === '' ? defaultPortFor(parsed.protocol) : Number(parsed.port);
 
-  if (originPort !== policy.port) {
+  if (port !== policy.port) {
     throw new ForbiddenOriginError('a origem da requisição aponta para outra porta');
   }
 }
 
-/** Separa `host:porta`, cuidando do formato IPv6 `[::1]:4321`. */
-function splitHost(host: string): { hostname: string; port: number | undefined } {
-  if (host.startsWith('[')) {
-    const closing = host.indexOf(']');
-
-    if (closing === -1) {
-      return { hostname: host, port: undefined };
-    }
-
-    const hostname = host.slice(0, closing + 1);
-    const rest = host.slice(closing + 1);
-
-    return {
-      hostname,
-      port: rest.startsWith(':') ? Number(rest.slice(1)) : undefined,
-    };
+/**
+ * Hostname de um cabeçalho `Host`, sem a porta.
+ *
+ * `new URL` faz o trabalho, inclusive o `[::1]:4321` do IPv6 — e `URL.hostname`
+ * devolve `[::1]` com os colchetes, que é a forma que está na allow-list.
+ * `Host` inválido cai em string vazia, que não está na lista.
+ */
+function hostnameOf(host: string): string {
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return '';
   }
-
-  const colon = host.lastIndexOf(':');
-
-  if (colon === -1) {
-    return { hostname: host, port: undefined };
-  }
-
-  return { hostname: host.slice(0, colon), port: Number(host.slice(colon + 1)) };
 }
 
 function defaultPortFor(protocol: string): number {

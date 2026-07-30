@@ -12,7 +12,7 @@ import {
   ProfileNotAuthenticatedError,
   StoreUnavailableError,
   VersionMismatchError,
-  WriteNotEnabledError,
+  ParameterCreationNotSupportedError,
 } from '../../domain/errors.js';
 import { AwsSsmStoreAdapter } from './AwsSsmStoreAdapter.js';
 
@@ -359,7 +359,7 @@ describe('put — grava com PutParameter', () => {
 
     await expect(
       adapter.put('/p', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 }),
-    ).rejects.toBeInstanceOf(WriteNotEnabledError);
+    ).rejects.toBeInstanceOf(ParameterCreationNotSupportedError);
 
     expect(sent).toEqual([]);
   });
