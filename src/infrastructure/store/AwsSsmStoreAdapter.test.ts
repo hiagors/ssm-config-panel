@@ -1,4 +1,8 @@
-import { DescribeParametersCommand, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  DescribeParametersCommand,
+  GetParameterCommand,
+  PutParameterCommand,
+} from '@aws-sdk/client-ssm';
 import type { SSMClient } from '@aws-sdk/client-ssm';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -7,6 +11,7 @@ import {
   ParameterNotFoundError,
   ProfileNotAuthenticatedError,
   StoreUnavailableError,
+  VersionMismatchError,
   WriteNotEnabledError,
 } from '../../domain/errors.js';
 import { AwsSsmStoreAdapter } from './AwsSsmStoreAdapter.js';
@@ -237,27 +242,148 @@ describe('list — busca por prefixo, sem trazer valores', () => {
   });
 });
 
-describe('put — desabilitado nesta fase', () => {
-  it('lança WriteNotEnabledError sem chamar a AWS', async () => {
-    // Nenhuma escrita em conta real antes de existir backup.
-    const { adapter, sent } = makeAdapter(() => ({}));
+describe('put — grava com PutParameter', () => {
+  /** Describe devolvendo um parâmetro na versão informada. */
+  function describing(version: number, extra: Record<string, unknown> = {}) {
+    return (command: unknown) => {
+      if (command instanceof DescribeParametersCommand) {
+        return {
+          Parameters: [
+            { Name: '/p', Type: 'String', Tier: 'Standard', Version: version, ...extra },
+          ],
+        };
+      }
+      return { Version: version + 1, Tier: 'Standard' };
+    };
+  }
+
+  it('usa Overwrite: true e devolve a versão resultante', async () => {
+    const { adapter, sent } = makeAdapter(describing(4));
+
+    const result = await adapter.put('/p', '{"a":1}', {
+      type: 'String',
+      tier: 'Standard',
+      expectedVersion: 4,
+    });
+
+    const put = sent.find((command) => command instanceof PutParameterCommand);
+
+    expect((put as PutParameterCommand).input).toMatchObject({
+      Name: '/p',
+      Value: '{"a":1}',
+      Overwrite: true,
+    });
+    expect(result.version).toBe(5);
+  });
+
+  it('descreve ANTES de gravar', async () => {
+    // A ordem é o que cumpre as duas garantias: não criar por efeito colateral e
+    // não sobrescrever às cegas.
+    const { adapter, sent } = makeAdapter(describing(1));
+
+    await adapter.put('/p', '{}', { type: 'String', tier: 'Standard', expectedVersion: 1 });
+
+    expect(sent[0]).toBeInstanceOf(DescribeParametersCommand);
+    expect(sent[1]).toBeInstanceOf(PutParameterCommand);
+  });
+
+  it('preserva Type, Tier e KeyId do que está no store', async () => {
+    const { adapter, sent } = makeAdapter(
+      describing(2, { Type: 'SecureString', Tier: 'Advanced', KeyId: 'alias/k' }),
+    );
+
+    await adapter.put('/p', '{}', {
+      // O que o chamador passa não pode rebaixar o que está lá.
+      type: 'String',
+      tier: 'Standard',
+      expectedVersion: 2,
+    });
+
+    const put = sent.find((command) => command instanceof PutParameterCommand);
+
+    expect((put as PutParameterCommand).input).toMatchObject({
+      Type: 'SecureString',
+      Tier: 'Advanced',
+      KeyId: 'alias/k',
+    });
+  });
+
+  it('não envia KeyId em parâmetro que não é SecureString', async () => {
+    // Enviar KeyId com Type String é erro na API.
+    const { adapter, sent } = makeAdapter(describing(1, { KeyId: 'alias/k' }));
+
+    await adapter.put('/p', '{}', { type: 'String', tier: 'Standard', expectedVersion: 1 });
+
+    const put = sent.find((command) => command instanceof PutParameterCommand);
+
+    expect((put as PutParameterCommand).input.KeyId).toBeUndefined();
+  });
+
+  it('versão divergente aborta SEM gravar', async () => {
+    const { adapter, sent } = makeAdapter(describing(9));
+
+    await expect(
+      adapter.put('/p', '{}', { type: 'String', tier: 'Standard', expectedVersion: 3 }),
+    ).rejects.toBeInstanceOf(VersionMismatchError);
+
+    expect(sent.some((command) => command instanceof PutParameterCommand)).toBe(false);
+  });
+
+  it('parâmetro inexistente NÃO é criado', async () => {
+    // Overwrite: true criaria. O Describe vazio é o que impede.
+    const { adapter, sent } = makeAdapter(() => ({ Parameters: [] }));
 
     await expect(
       adapter.put('/p', '{}', { type: 'String', tier: 'Standard', expectedVersion: 1 }),
-    ).rejects.toThrow(WriteNotEnabledError);
+    ).rejects.toBeInstanceOf(ParameterNotFoundError);
+
+    expect(sent.some((command) => command instanceof PutParameterCommand)).toBe(false);
+  });
+
+  it('sem permissão de DescribeParameters, recusa gravar', async () => {
+    // Também fecha o risco de Tier: sem Describe o get() cai para Standard, e
+    // gravar com esse palpite rebaixaria um parâmetro Advanced.
+    const { adapter, sent } = makeAdapter((command) =>
+      command instanceof DescribeParametersCommand ? awsError('AccessDeniedException') : {},
+    );
+
+    await expect(
+      adapter.put('/p', '{}', { type: 'String', tier: 'Advanced', expectedVersion: 1 }),
+    ).rejects.toBeInstanceOf(ParameterNotFoundError);
+
+    expect(sent.some((command) => command instanceof PutParameterCommand)).toBe(false);
+  });
+
+  it('expectedVersion 0 (criar) é recusado', async () => {
+    const { adapter, sent } = makeAdapter(describing(1));
+
+    await expect(
+      adapter.put('/p', '{}', { type: 'String', tier: 'Standard', expectedVersion: 0 }),
+    ).rejects.toBeInstanceOf(WriteNotEnabledError);
 
     expect(sent).toEqual([]);
   });
 
-  it('a mensagem explica que é sequência, não bug', async () => {
-    const { adapter } = makeAdapter(() => ({}));
+  it('valida o name antes de qualquer chamada', async () => {
+    const { adapter, sent } = makeAdapter(describing(1));
+
+    await expect(
+      adapter.put('sem-barra', '{}', { type: 'String', tier: 'Standard', expectedVersion: 1 }),
+    ).rejects.toThrow(/precisa começar com/);
+
+    expect(sent).toEqual([]);
+  });
+
+  it('erro de permissão no Put é traduzido, sem repassar mensagem crua', async () => {
+    const { adapter } = makeAdapter((command) =>
+      command instanceof PutParameterCommand
+        ? awsError('AccessDeniedException')
+        : { Parameters: [{ Name: '/p', Type: 'String', Tier: 'Standard', Version: 1 }] },
+    );
 
     await expect(
       adapter.put('/p', '{}', { type: 'String', tier: 'Standard', expectedVersion: 1 }),
-    ).rejects.toMatchObject({
-      code: 'WRITE_NOT_ENABLED',
-      publicMessage: expect.stringContaining('backup'),
-    });
+    ).rejects.toMatchObject({ code: 'AWS_ACCESS_DENIED' });
   });
 });
 

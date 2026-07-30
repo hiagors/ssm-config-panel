@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Parameter, ParameterMetadata } from '../domain/Parameter.js';
-import { ParameterNotFoundError, VersionMismatchError } from '../domain/errors.js';
+import {
+  BackupFailedError,
+  ParameterNotFoundError,
+  VersionMismatchError,
+} from '../domain/errors.js';
+import type {
+  BackupInput,
+  BackupPort,
+  BackupResult,
+} from '../infrastructure/backup/BackupPort.js';
 import type {
   ListOptions,
   ParameterStorePort,
@@ -80,10 +89,38 @@ class FakeStore implements ParameterStorePort {
   }
 }
 
+/**
+ * Rede de proteção falsa.
+ *
+ * Registra as chamadas porque a asserção que importa é de **ordem**: o backup
+ * tem de acontecer antes do `put`, e não acontecer nada quando o save aborta.
+ */
+class FakeBackup implements BackupPort {
+  readonly saved: BackupInput[] = [];
+  shouldFail = false;
+
+  async save(input: BackupInput): Promise<BackupResult> {
+    if (this.shouldFail) {
+      throw new BackupFailedError(input.metadata.name, 'disco cheio (simulado)');
+    }
+
+    this.saved.push(input);
+
+    return {
+      entry: { savedAt: '2026-07-29T12:00:00.000Z', version: input.metadata.version, absolutePath: '/tmp/fake' },
+      pruned: [],
+    };
+  }
+
+  async list(): Promise<readonly []> {
+    return [];
+  }
+}
+
 describe('SaveParameterUseCase — caminho felizes', () => {
   it('grava quando a versão bate', async () => {
     const store = FakeStore.with({ version: 3 }, '{"a":1}');
-    const useCase = new SaveParameterUseCase(store);
+    const useCase = new SaveParameterUseCase(store, new FakeBackup());
 
     const result = await useCase.execute({
       name: '/example/demo',
@@ -98,7 +135,7 @@ describe('SaveParameterUseCase — caminho felizes', () => {
   it('relê antes de gravar', async () => {
     const store = FakeStore.with({ version: 1 }, '{"a":1}');
 
-    await new SaveParameterUseCase(store).execute({
+    await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"a":2}',
       expectedVersion: 1,
@@ -114,7 +151,7 @@ describe('SaveParameterUseCase — caminho felizes', () => {
       '{"a":1}',
     );
 
-    await new SaveParameterUseCase(store).execute({
+    await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"a":2}',
       expectedVersion: 5,
@@ -130,7 +167,7 @@ describe('SaveParameterUseCase — caminho felizes', () => {
   it('repassa expectedVersion para o adapter checar de novo', async () => {
     const store = FakeStore.with({ version: 7 }, '{"a":1}');
 
-    await new SaveParameterUseCase(store).execute({
+    await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"a":2}',
       expectedVersion: 7,
@@ -142,7 +179,7 @@ describe('SaveParameterUseCase — caminho felizes', () => {
   it('grava mudança só de formatação', async () => {
     const store = FakeStore.with({ version: 1 }, '{"a":1}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{ "a" : 1 }',
       expectedVersion: 1,
@@ -156,7 +193,7 @@ describe('SaveParameterUseCase — lost update', () => {
   it('aborta quando a versão divergiu e NÃO grava', async () => {
     const store = FakeStore.with({ version: 5 }, '{"deles":true}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"meu":true}',
       expectedVersion: 3,
@@ -170,7 +207,7 @@ describe('SaveParameterUseCase — lost update', () => {
   it('o conflito carrega o valor atual, que o diff de três vias precisa', async () => {
     const store = FakeStore.with({ version: 5 }, '{"deles":true}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"meu":true}',
       expectedVersion: 3,
@@ -187,7 +224,7 @@ describe('SaveParameterUseCase — lost update', () => {
   it('o conflito carrega os metadados atuais', async () => {
     const store = FakeStore.with({ version: 5, type: 'SecureString', keyId: 'alias/k' }, '{}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"meu":true}',
       expectedVersion: 3,
@@ -199,7 +236,7 @@ describe('SaveParameterUseCase — lost update', () => {
   it('versão mais nova que a esperada também aborta', async () => {
     const store = FakeStore.with({ version: 2 }, '{}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"x":1}',
       expectedVersion: 9,
@@ -219,7 +256,7 @@ describe('SaveParameterUseCase — lost update', () => {
       throw new VersionMismatchError(name, options.expectedVersion, 5);
     });
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"meu":true}',
       expectedVersion: 4,
@@ -236,7 +273,7 @@ describe('SaveParameterUseCase — nunca cria', () => {
     // `PutParameter` com `Overwrite: true` criaria. Aqui não.
     const store = FakeStore.empty();
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/ausente',
       value: '{"a":1}',
       expectedVersion: 1,
@@ -249,7 +286,7 @@ describe('SaveParameterUseCase — nunca cria', () => {
   it('nem com expectedVersion alto', async () => {
     const store = FakeStore.empty();
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/ausente',
       value: '{"a":1}',
       expectedVersion: 999,
@@ -264,7 +301,7 @@ describe('SaveParameterUseCase — revalida no servidor', () => {
   it('recusa JSON inválido', async () => {
     const store = FakeStore.with({ version: 1 }, '{"a":1}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"a":',
       expectedVersion: 1,
@@ -277,7 +314,7 @@ describe('SaveParameterUseCase — revalida no servidor', () => {
   it('recusa chave duplicada, mesmo que o cliente tenha deixado passar', async () => {
     const store = FakeStore.with({ version: 1 }, '{"a":1}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"a":1,"a":2}',
       expectedVersion: 1,
@@ -292,7 +329,7 @@ describe('SaveParameterUseCase — revalida no servidor', () => {
   it('recusa chave vazia', async () => {
     const store = FakeStore.with({ version: 1 }, '{"a":1}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"":1}',
       expectedVersion: 1,
@@ -310,15 +347,15 @@ describe('SaveParameterUseCase — revalida no servidor', () => {
     const advanced = FakeStore.with({ version: 1, tier: 'Advanced' }, '{}');
     const input = { name: '/example/demo', value: big, expectedVersion: 1 };
 
-    expect((await new SaveParameterUseCase(standard).execute(input)).outcome).toBe('invalid');
-    expect((await new SaveParameterUseCase(advanced).execute(input)).outcome).toBe('saved');
+    expect((await new SaveParameterUseCase(standard, new FakeBackup()).execute(input)).outcome).toBe('invalid');
+    expect((await new SaveParameterUseCase(advanced, new FakeBackup()).execute(input)).outcome).toBe('saved');
   });
 
   it('aviso de tamanho não bloqueia a gravação', async () => {
     const store = FakeStore.with({ version: 1, tier: 'Standard' }, '{}');
     const nearLimit = `{"a":"${'x'.repeat(Math.floor(4096 * 0.92))}"}`;
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: nearLimit,
       expectedVersion: 1,
@@ -332,7 +369,7 @@ describe('SaveParameterUseCase — nada vaza valor', () => {
   it('o desfecho invalid não repassa o conteúdo', async () => {
     const store = FakeStore.with({ version: 1 }, '{}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: `{"token":"${SENTINEL}"`,
       expectedVersion: 1,
@@ -345,7 +382,7 @@ describe('SaveParameterUseCase — nada vaza valor', () => {
   it('o desfecho invalid de chave duplicada não repassa o valor', async () => {
     const store = FakeStore.with({ version: 1 }, '{}');
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: `{"a":"${SENTINEL}","a":"${SENTINEL}"}`,
       expectedVersion: 1,
@@ -361,7 +398,7 @@ describe('SaveParameterUseCase — nada vaza valor', () => {
     // teste documenta a intenção para ninguém "consertar" isso depois.
     const store = FakeStore.with({ version: 5 }, `{"segredo":"${SENTINEL}"}`);
 
-    const result = await new SaveParameterUseCase(store).execute({
+    const result = await new SaveParameterUseCase(store, new FakeBackup()).execute({
       name: '/example/demo',
       value: '{"meu":true}',
       expectedVersion: 3,
@@ -379,5 +416,141 @@ describe('httpStatusForOutcome', () => {
     ['conflict', 409],
   ] as const)('%s -> %i', (outcome, status) => {
     expect(httpStatusForOutcome(outcome)).toBe(status);
+  });
+});
+
+describe('SaveParameterUseCase — a rede de proteção', () => {
+  it('faz backup ANTES de gravar', async () => {
+    // A ordem é o ponto. Backup depois do put não protege de nada.
+    const store = FakeStore.with({ version: 3 }, '{"anterior":true}');
+    const backup = new FakeBackup();
+    const order: string[] = [];
+
+    const originalPut = store.put.bind(store);
+    vi.spyOn(store, 'put').mockImplementation(async (...args) => {
+      order.push('put');
+      return originalPut(...args);
+    });
+    const originalSave = backup.save.bind(backup);
+    vi.spyOn(backup, 'save').mockImplementation(async (input) => {
+      order.push('backup');
+      return originalSave(input);
+    });
+
+    await new SaveParameterUseCase(store, backup).execute({
+      name: '/example/demo',
+      value: '{"novo":true}',
+      expectedVersion: 3,
+    });
+
+    expect(order).toEqual(['backup', 'put']);
+    vi.restoreAllMocks();
+  });
+
+  it('o backup guarda a versão ANTERIOR, não a nova', async () => {
+    // Guardar o valor novo seria inútil: ele já está no store.
+    const store = FakeStore.with({ version: 3 }, '{"anterior":true}');
+    const backup = new FakeBackup();
+
+    await new SaveParameterUseCase(store, backup).execute({
+      name: '/example/demo',
+      value: '{"novo":true}',
+      expectedVersion: 3,
+    });
+
+    expect(backup.saved).toHaveLength(1);
+    expect(backup.saved[0]?.value).toBe('{"anterior":true}');
+    expect(backup.saved[0]?.metadata.version).toBe(3);
+  });
+
+  it('o backup preserva os metadados necessários para rollback', async () => {
+    const store = FakeStore.with(
+      { version: 2, type: 'SecureString', tier: 'Advanced', keyId: 'alias/k' },
+      '{"segredo":true}',
+    );
+    const backup = new FakeBackup();
+
+    await new SaveParameterUseCase(store, backup).execute({
+      name: '/example/demo',
+      value: '{}',
+      expectedVersion: 2,
+    });
+
+    expect(backup.saved[0]?.metadata).toMatchObject({
+      type: 'SecureString',
+      tier: 'Advanced',
+      keyId: 'alias/k',
+    });
+  });
+
+  it('falha de backup ABORTA a gravação', async () => {
+    // Sem rede de proteção, não grava. Não é aviso, é bloqueio.
+    const store = FakeStore.with({ version: 3 }, '{"anterior":true}');
+    const backup = new FakeBackup();
+    backup.shouldFail = true;
+
+    await expect(
+      new SaveParameterUseCase(store, backup).execute({
+        name: '/example/demo',
+        value: '{"novo":true}',
+        expectedVersion: 3,
+      }),
+    ).rejects.toBeInstanceOf(BackupFailedError);
+
+    expect(store.putCalls).toEqual([]);
+  });
+
+  it('a mensagem de falha de backup diz que nada foi alterado', async () => {
+    const store = FakeStore.with({ version: 1 }, '{}');
+    const backup = new FakeBackup();
+    backup.shouldFail = true;
+
+    await expect(
+      new SaveParameterUseCase(store, backup).execute({
+        name: '/example/demo',
+        value: '{"x":1}',
+        expectedVersion: 1,
+      }),
+    ).rejects.toMatchObject({
+      code: 'BACKUP_FAILED',
+      publicMessage: expect.stringContaining('Nada foi alterado'),
+    });
+  });
+
+  it('conflito não gera backup: nada vai ser sobrescrito', async () => {
+    const store = FakeStore.with({ version: 5 }, '{}');
+    const backup = new FakeBackup();
+
+    await new SaveParameterUseCase(store, backup).execute({
+      name: '/example/demo',
+      value: '{"x":1}',
+      expectedVersion: 3,
+    });
+
+    expect(backup.saved).toEqual([]);
+  });
+
+  it('parâmetro inexistente não gera backup', async () => {
+    const backup = new FakeBackup();
+
+    await new SaveParameterUseCase(FakeStore.empty(), backup).execute({
+      name: '/example/ausente',
+      value: '{}',
+      expectedVersion: 1,
+    });
+
+    expect(backup.saved).toEqual([]);
+  });
+
+  it('valor inválido não gera backup', async () => {
+    const backup = new FakeBackup();
+
+    await new SaveParameterUseCase(FakeStore.with({ version: 1 }, '{}'), backup).execute({
+      name: '/example/demo',
+      value: '{"a":',
+      expectedVersion: 1,
+    });
+
+    expect(backup.saved).toEqual([]);
   });
 });

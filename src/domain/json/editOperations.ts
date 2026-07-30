@@ -4,7 +4,7 @@ import type {
   JsonNodeKind,
   ObjectEntry,
 } from './JsonDocument.js';
-import { createEntry, createNode } from './JsonDocument.js';
+import { createEntry, createNode, scalarText } from './JsonDocument.js';
 import type { EditPath } from './jsonPath.js';
 
 /**
@@ -146,13 +146,33 @@ export function setBooleanValue(
 }
 
 /**
- * Troca o tipo do nó, criando um valor padrão do tipo novo.
+ * Troca o tipo do nó, **preservando o texto bruto** quando há onde guardá-lo.
  *
- * O tipo vem sempre do seletor, nunca é inferido do conteúdo — é o que
- * mantém `null` e `""` distintos. Trocar para `null` produz `null`; trocar
- * para `string` produz `""`. Os dois são estados alcançáveis e diferentes.
+ * O tipo vem sempre do seletor ou do menu, nunca é inferido do conteúdo — é o
+ * que mantém `null` e `""` distintos. Trocar para `null` produz `null`; trocar
+ * para `string` produz `""` quando não havia texto.
  *
- * Trocar de container para escalar descarta os filhos. A UI confirma antes.
+ * ── Por que preservar em vez de resetar ─────────────────────────────────────
+ *
+ * `"abc"` → número **não pode** descartar `"abc"`. Quem digitou o valor errado
+ * quer corrigi-lo, não redigitá-lo; e o modelo já sabe representar um lexema
+ * numérico inválido, porque a validação existe para acusá-lo. Resetar para `0`
+ * apagaria o trabalho e ainda esconderia o erro.
+ *
+ * O que sobrevive, e o que não:
+ *
+ * | de → para | resultado                                              |
+ * |-----------|--------------------------------------------------------|
+ * | texto ↔ número | o texto passa inteiro; validação acusa se inválido |
+ * | texto/número → booleano | `false`; o modelo não guarda booleano inválido |
+ * | texto/número → null | `null`; `null` não tem conteúdo por definição |
+ * | booleano/null → texto | `""`; interpolar `"true"` seria inventar conteúdo |
+ * | qualquer → container | container vazio |
+ * | container → qualquer | filhos descartados; a UI confirma antes |
+ *
+ * A linha de booleano é a única em que a regra "preserve o texto" não se
+ * aplica: não existe lugar no modelo para um booleano inválido. Converter
+ * `"abc"` para booleano perde o `"abc"`, e essa perda é silenciosa.
  */
 export function changeNodeKind(
   document: JsonDocument,
@@ -165,8 +185,25 @@ export function changeNodeKind(
       if (node.kind === kind) {
         return node;
       }
-      // Preserva a identidade para o React não remontar a linha inteira.
-      return { ...createNode(kind), id: node.id };
+
+      // Preserva a identidade para o React não remontar a linha inteira e o
+      // foco não ir para o começo do formulário.
+      const replacement = { ...createNode(kind), id: node.id };
+      const carried = scalarText(node);
+
+      if (carried === undefined || carried === '') {
+        return replacement;
+      }
+
+      if (replacement.kind === 'string') {
+        return { ...replacement, value: carried };
+      }
+
+      if (replacement.kind === 'number') {
+        return { ...replacement, raw: carried };
+      }
+
+      return replacement;
     }),
   );
 }

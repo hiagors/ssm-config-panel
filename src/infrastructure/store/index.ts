@@ -3,6 +3,8 @@ import {
   ProfileNotUsableError,
   StoreUnavailableError,
 } from '../../domain/errors.js';
+import { LocalFileBackupAdapter } from '../backup/LocalFileBackupAdapter.js';
+import type { BackupPort } from '../backup/BackupPort.js';
 import { AwsSsoAdapter } from '../auth/AwsSsoAdapter.js';
 import type { SsoAuthPort } from '../auth/SsoAuthPort.js';
 import { AwsSsmStoreAdapter } from './AwsSsmStoreAdapter.js';
@@ -33,6 +35,7 @@ export type StoreDriver = (typeof STORE_DRIVERS)[number];
 
 const DEFAULT_DRIVER: StoreDriver = 'local';
 const DEFAULT_LOCAL_STORE_DIR = './.local-store';
+const DEFAULT_BACKUP_DIR = './.backups';
 
 /** Contexto de uma operação: qual driver e, no caso da AWS, qual identidade. */
 export interface StoreContext {
@@ -44,6 +47,29 @@ export interface StoreContext {
 const storeCache = new Map<string, ParameterStorePort>();
 
 let authAdapter: SsoAuthPort | undefined;
+let backupAdapter: BackupPort | undefined;
+
+/**
+ * Rede de proteção compartilhada.
+ *
+ * Vale para os **dois** drivers. No `local` o store já é um arquivo, mas o
+ * backup é o que dá rollback; no `aws` é o que o spec exige antes da primeira
+ * escrita em conta real.
+ */
+export function getBackupPort(): BackupPort {
+  backupAdapter ??= new LocalFileBackupAdapter(resolveBackupDir());
+  return backupAdapter;
+}
+
+/** Só para teste: injeta uma rede de proteção falsa. */
+export function setBackupPortForTesting(port: BackupPort | undefined): void {
+  backupAdapter = port;
+}
+
+export function resolveBackupDir(): string {
+  const raw = process.env['BACKUP_DIR']?.trim();
+  return raw === undefined || raw === '' ? DEFAULT_BACKUP_DIR : raw;
+}
 
 /** Instância compartilhada da porta de autenticação. */
 export function getSsoAuth(): SsoAuthPort {

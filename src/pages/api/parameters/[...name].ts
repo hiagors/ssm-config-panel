@@ -9,7 +9,7 @@ import {
   InvalidRequestBodyError,
 } from '../../../domain/errors.js';
 import { storeContextFromUrl } from '../../../infrastructure/http/storeContext.js';
-import { resolveParameterStore } from '../../../infrastructure/store/index.js';
+import { getBackupPort, resolveParameterStore } from '../../../infrastructure/store/index.js';
 import { errorResponse, jsonResponse, parameterNameFromRoute } from '../_http.js';
 
 export const prerender = false;
@@ -53,7 +53,7 @@ export const PUT: APIRoute = async ({ params, request, url }) => {
     const name = requireName(params['name']);
     const body = await parseBody(request);
     const store = await resolveParameterStore(storeContextFromUrl(url));
-    const useCase = new SaveParameterUseCase(store);
+    const useCase = new SaveParameterUseCase(store, getBackupPort());
 
     const result = await useCase.execute({
       name,

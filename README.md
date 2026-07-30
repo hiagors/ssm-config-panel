@@ -3,11 +3,9 @@
 Ferramenta web **local** para visualizar, validar e editar parâmetros JSON no AWS SSM Parameter
 Store. Roda na sua máquina, em loopback, e substitui a edição de JSON cru no console da AWS.
 
-> **Estado atual: Fase 3a concluída.** Já lê do SSM real, com seletor de profiles, login SSO e
-> `SecureString` decriptado. O adapter da AWS é **somente-leitura**: a gravação entra junto com o
-> backup local, para que nenhuma escrita em conta real aconteça sem rede de proteção. No driver
-> `local` a gravação já funciona completa, com diff e proteção contra lost update.
-> Veja [Roadmap](#roadmap).
+> **Estado atual: Fase 3 concluída.** Lê e grava no SSM real, com seletor de profiles, login SSO,
+> `SecureString` decriptado, e backup da versão anterior antes de cada gravação. Falta a Fase 4:
+> testes restantes e documentação. Veja [Roadmap](#roadmap).
 
 ## Pré-requisitos
 
@@ -64,7 +62,7 @@ A escolha do adapter vem de `STORE_DRIVER` no `.env`, resolvida em um único *co
 | Valor | Adapter | Situação |
 | --- | --- | --- |
 | `local` | `LocalFileStoreAdapter` | grava JSON em `./.local-store`, espelhando o formato do SSM |
-| `aws` | `AwsSsmStoreAdapter` | SSM real, **somente leitura**. `put()` falha explicitamente até o backup existir |
+| `aws` | `AwsSsmStoreAdapter` | SSM real, leitura e gravação, sempre atrás de backup |
 
 O store local espelha a hierarquia do SSM em diretórios:
 
@@ -142,6 +140,53 @@ No driver `local`, a tela lista tudo — enumerar arquivos é barato. Contra o S
 listar tudo**: a busca é sempre por prefixo de path. Varrer uma conta de produção é paginado, lento
 e sujeito a throttling.
 
+## Backup: a rede de proteção da gravação
+
+Antes de cada `PutParameter`, a versão que vai ser sobrescrita é copiada para disco. **Se o backup
+falhar, a gravação é abortada** — não é melhor esforço, é bloqueio. Um backup que falha em silêncio é
+pior que backup nenhum, porque cria a confiança sem a garantia.
+
+```
+/prod/billing/env  ->  .backups/prod/billing/env/2026-07-30T12-35-19.480Z.json
+```
+
+O arquivo é um envelope, não o valor cru — diferente do `.local-store`. Sem `version`, `type`,
+`tier` e `keyId`, um backup não serve para rollback:
+
+```json
+{
+  "name": "/prod/billing/env",
+  "version": 3,
+  "type": "SecureString",
+  "tier": "Advanced",
+  "keyId": "alias/minha-chave",
+  "savedAt": "2026-07-30T12:35:19.480Z",
+  "value": "{...}"
+}
+```
+
+Escrita por temporário + `rename`, e por um motivo: o backup é lido como prova de que a versão
+anterior está salva, e um arquivo truncado por queda no meio da escrita seria pior que ausência —
+pareceria válido.
+
+### Retenção
+
+`./.backups/` é o único lugar do desenho que guarda em texto claro o que o SSM guarda cifrado. Sem
+poda, cada save de um `SecureString` deixa mais uma cópia permanente do segredo.
+
+| Variável | Padrão | O que faz |
+| --- | --- | --- |
+| `BACKUP_DIR` | `./.backups` | onde as cópias ficam |
+| `BACKUP_MAX_AGE_DAYS` | `90` | idade máxima; `0` desliga |
+| `BACKUP_MAX_VERSIONS_PER_PARAMETER` | `20` | quantidade máxima; `0` desliga |
+
+**O backup mais recente nunca é apagado**, independente dos dois limites. Sem essa regra, um
+`BACKUP_MAX_AGE_DAYS=1` esquecido no `.env` apagaria a única cópia existente na primeira poda — e a
+poda roda justamente no momento em que a versão anterior está sendo sobrescrita.
+
+A poda é por parâmetro, na gravação, e falha de poda **não** invalida o backup recém-gravado: a rede
+de proteção está de pé, só sobrou lixo. Abortar ali bloquearia o save por um problema de limpeza.
+
 ## ⚠️ Segredos em texto claro
 
 **`./.local-store/` e `./.backups/` contêm valores de parâmetro em texto claro, incluindo
@@ -172,6 +217,35 @@ Outras garantias implementadas:
   gerenciador. O teste verifica o HTML emitido, não os props.
 - Rascunho nunca é escrito em `localStorage`, cookie, query string nem arquivo temporário: vive só
   no estado do React.
+
+## Por que o editor é uma grade única, e não containers aninhados
+
+A tela de edição é **uma** CSS grid: `.tree-head` e `.tree-row` compartilham a mesma
+`grid-template-columns`, em qualquer profundidade.
+
+```
+16px   minmax(0,190px)   92px   minmax(0,1fr)   56px
+grip   chave             tipo   valor           ação (2 slots)
+```
+
+A versão anterior renderizava recursão por **aninhamento de componentes**: cada nível abria um
+container com padding e um grid próprio, dentro de uma largura já estreitada. A coluna de valor era
+recalculada a cada nível, e a coluna de chave reservava espaço de novo em cada profundidade — com 3
+níveis, sobravam ~30px para o input e o conteúdo não aparecia.
+
+Agora a árvore é achatada em lista de linhas por [treeRows.ts](src/components/editor/treeRows.ts) —
+recursão de **dados**, não de render. Todas as linhas são irmãs na mesma grade, a coluna de valor é
+medida uma vez contra a largura total (454px na largura padrão, em qualquer nível), e a profundidade
+existe só como `padding-left` dentro da célula de chave. O container da linha nunca ganha padding por
+profundidade.
+
+Linhas de objeto e lista são header: chevron, nome e badge de contagem. Não renderizam input de valor
+nem seletor de tipo — a conversão para container mora no menu kebab, com confirmação **só quando há
+perda real** (valor não vazio ou filhos existentes). `""` → objeto não abre diálogo.
+
+Entre escalares, a conversão **preserva o texto bruto**: `"abc"` para número continua `"abc"`,
+marcado como inválido pela validação que já existia. Resetar para `0` apagaria o trabalho de quem
+digitou errado e ainda esconderia o erro.
 
 ## Por que o editor tem parser próprio de JSON
 
@@ -263,12 +337,10 @@ tratadas em [csrf.ts](src/infrastructure/http/csrf.ts) e aplicadas no middleware
 
 ## Limitações conhecidas
 
-- **O driver `aws` não grava.** `put()` falha com `WRITE_NOT_ENABLED`. A escrita entra junto com o
-  backup e a retenção — nenhuma gravação em conta real sem rede de proteção. O driver `local` grava
-  completo.
-- **Sem backup ainda.** No driver local a gravação sobrescreve sem guardar a versão anterior.
-- **Sem histórico, sem fluxo de criação de parâmetro e sem drag-and-drop**, por decisão de escopo:
-  usar a ferramenta por duas semanas antes de decidir se fazem falta.
+- **Criar parâmetro não é possível pela ferramenta.** `put()` exige que o parâmetro exista; criar é
+  fluxo separado e explícito, fora de escopo por decisão.
+- **Sem histórico e sem fluxo de criação de parâmetro**, por decisão de escopo: usar a ferramenta
+  por duas semanas antes de decidir se fazem falta.
 - **Sem pretty-print da aba JSON cru.** Um parâmetro minificado de linha única é navegável pelo
   formulário, mas a aba de texto cru mostra uma linha só. O toggle de visualização está previsto no
   spec e ainda não foi feito.
@@ -281,9 +353,11 @@ tratadas em [csrf.ts](src/infrastructure/http/csrf.ts) e aplicadas no middleware
 - **Conflito de `SecureString` não tem botão de revelar.** Mostra só quais caminhos divergiram.
   Revelar três versões de um segredo numa tela de decisão apressada é o oposto do critério de
   compartilhar tela com segurança — para ver o conteúdo, volte a editar e revele campo por campo.
-- **Reordenar é por botão sobe/desce**, não arrastar. Funciona por teclado e é testável.
-- **Painel aninhado começa fechado a partir do terceiro nível**, para a tela não explodir em
-  parâmetro grande. Abrir é um clique.
+- **Reordenar é por arrastar a alça, ou `Alt+↑/↓` com a alça focada.** A alça aparece no hover e no
+  foco por teclado. Arrastar só funciona entre irmãos: mover entre pais diferentes seria remover e
+  inserir, outra operação com outra semântica de diff.
+- **Acima de 3 níveis não há expansão em linha**: o header entra no escopo (drill-in) e o breadcrumb
+  mostra o caminho. Indentar além disso comeria a coluna de chave de 190px.
 - **Raiz que não é objeto nem lista** (um parâmetro cujo valor é só uma string, por exemplo) não
   tem formulário de chave-valor: cai na aba JSON cru, com aviso.
 - **Chave terminada em `.meta`** é rejeitada no driver local, porque colidiria com o sidecar.
@@ -325,10 +399,9 @@ O contrato está em [src/infrastructure/store/ParameterStorePort.ts](src/infrast
       update com diff de três vias, e CSRF (`security.checkOrigin` + validação de Host).
 - [x] **Fase 3a** — seletor de profiles (com os sem SSO bloqueados), login SSO, `AwsSsmStoreAdapter`
       somente-leitura, `SecureString` real, sessão do Astro desligada.
-- [ ] **Fase 3b** — backup local + retenção, e só então a escrita no SSM real.
+- [x] **Fase 3b** — backup local + retenção, e a escrita no SSM real habilitada em cima disso.
 - [ ] **Fase 4** — testes restantes e documentação (`docs/architecture.md`,
-      `docs/iam-policy.json`). Histórico, fluxo de criação e drag-and-drop ficaram fora por decisão
-      de escopo.
+      `docs/iam-policy.json`). Histórico e fluxo de criação ficaram fora por decisão de escopo.
 
 ### Critérios de aceitação
 

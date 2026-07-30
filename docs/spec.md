@@ -210,6 +210,6 @@ Entrega em fases, com o app rodando ao final de cada uma. Ao final de cada fase,
 2. **2a — Editor, sem nenhum caminho de gravação.** Middleware com `no-store` em toda resposta; modelo de documento próprio (parser com spans, serializador ciente de `dirty`, operações puras); validação; editor React recursivo com os seis tipos, arrays e aba JSON cru bidirecional; pretty-print como render; mascaramento de `SecureString`; `500.astro`. Botão Salvar presente e desabilitado.
 3. **2b — Gravação, com as duas guardas nascendo juntas.** Diff estrutural por caminho, confirmação, rota PUT, `expectedVersion` no port, lost update com diff de três vias, `SaveOutcome` como resultado, e **CSRF/Origin/Host no mesmo pacote** — a primeira rota mutante não pode existir sem isso.
 4. **Fase 3 — AWS.** Seletor de profiles (com profiles sem SSO distinguidos), autenticação SSO, `AwsSsmStoreAdapter`, `SecureString` real, sessão do Astro desabilitada. **Backup e retenção entram aqui, antes do primeiro `PutParameter` contra a AWS** — nenhuma escrita em SSM real sem rede de proteção. Considere fazer o adapter nascer somente-leitura e liberar a escrita junto com o backup.
-5. **Fase 4 — Fechamento.** Histórico, fluxo de criação de parâmetro, testes restantes, `docs/architecture.md`, `docs/iam-policy.json`, README completo.
+5. **Fase 4 — Fechamento.** Histórico, testes restantes, `docs/architecture.md`, `docs/iam-policy.json`, README completo.
 
 Não invente configuração de conta, região ou nomes de parâmetro: pergunte ou deixe como variável de ambiente documentada.

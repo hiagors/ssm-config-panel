@@ -27,6 +27,7 @@ export type AppErrorCode =
   | 'AWS_ACCESS_DENIED'
   | 'AWS_REQUEST_FAILED'
   | 'WRITE_NOT_ENABLED'
+  | 'BACKUP_FAILED'
   | 'STORE_UNAVAILABLE'
   | 'STORE_DRIVER_NOT_IMPLEMENTED'
   | 'INTERNAL_ERROR';
@@ -303,6 +304,30 @@ export class WriteNotEnabledError extends AppError {
     this.publicMessage =
       `A gravação no SSM real ainda não está habilitada. O adapter da AWS é somente-leitura até ` +
       `o backup local existir — nenhuma escrita em conta real sem rede de proteção.`;
+  }
+}
+
+/**
+ * O backup da versão anterior falhou, então a gravação foi abortada.
+ *
+ * Não é aviso: é bloqueio. O backup existe para que nenhuma escrita aconteça sem
+ * cópia da versão anterior, e um backup que falha em silêncio é pior que backup
+ * nenhum — cria a confiança sem a garantia. A consequência aceita é que disco
+ * cheio ou permissão errada em `./.backups/` impedem salvar.
+ */
+export class BackupFailedError extends AppError {
+  readonly code = 'BACKUP_FAILED' as const;
+  readonly httpStatus = 500;
+  readonly publicMessage: string;
+
+  constructor(
+    readonly parameterName: string,
+    readonly reason: string,
+  ) {
+    super(`backup failed for ${parameterName}: ${reason}`);
+    this.publicMessage =
+      `A gravação foi abortada porque o backup da versão anterior de ${parameterName} falhou: ` +
+      `${reason}. Nada foi alterado. Verifique espaço em disco e a permissão de ./.backups.`;
   }
 }
 

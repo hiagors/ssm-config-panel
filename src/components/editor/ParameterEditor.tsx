@@ -2,16 +2,23 @@ import { useMemo, useState } from 'react';
 import type { GetParameterResult } from '../../application/GetParameterUseCase.js';
 import type { ValidationIssue } from '../../application/validation/validateDocument.js';
 import { issuesByPath, validateDocument } from '../../application/validation/validateDocument.js';
+import { appendEntry, appendItem, moveEntry, moveItem } from '../../domain/json/editOperations.js';
 import { parseJsonDocument } from '../../domain/json/parseJsonDocument.js';
 import { structuralDiff, threeWayDiff } from '../../domain/json/structuralDiff.js';
+import type { EditPath } from '../../domain/json/jsonPath.js';
+import { pathKey } from '../../domain/json/jsonPath.js';
 import ConflictView from './ConflictView.js';
 import DiffView from './DiffView.js';
 import { EditorProvider } from './EditorContext.js';
-import { RootEditor } from './NodeEditor.js';
 import RawJsonEditor from './RawJsonEditor.js';
+import TreeBreadcrumb from './TreeBreadcrumb.js';
+import TreeGrid from './TreeGrid.js';
+import TreeToolbar from './TreeToolbar.js';
 import ValidationSummary from './ValidationSummary.js';
+import { allContainerKeys } from './treeRows.js';
 import { saveParameter } from './saveParameter.js';
 import { useParameterDraft } from './useParameterDraft.js';
+import { useTreeView } from './useTreeView.js';
 
 /**
  * Ilha de topo do editor.
@@ -26,13 +33,6 @@ interface Props {
   readonly parameter: GetParameterResult;
   /** Profile em uso; vai em toda gravação, para a identidade nunca ser inferida. */
   readonly profileName?: string | undefined;
-  /**
-   * `true` no driver `aws`, onde a escrita ainda não está habilitada.
-   *
-   * O botão de revisar continua visível e explica o motivo, em vez de
-   * desaparecer: some é pior, porque o usuário fica sem saber se é bug.
-   */
-  readonly readOnly?: boolean;
 }
 
 type SavePhase =
@@ -49,11 +49,7 @@ type SavePhase =
   | { readonly phase: 'rejected'; readonly issues: readonly ValidationIssue[] }
   | { readonly phase: 'failed'; readonly message: string };
 
-export default function ParameterEditor({
-  parameter,
-  profileName,
-  readOnly = false,
-}: Props) {
+export default function ParameterEditor({ parameter, profileName }: Props) {
   const draft = useParameterDraft(
     parameter.value,
     parameter.metadata.version,
@@ -76,6 +72,58 @@ export default function ParameterEditor({
     [validation],
   );
 
+  const view = useTreeView(document);
+
+  /**
+   * Solta a linha arrastada sobre outra.
+   *
+   * Só reordena entre **irmãos**: `moveEntry` e `moveItem` operam dentro de um
+   * container, e mover entre pais diferentes seria remover e inserir — outra
+   * operação, com outra semântica de diff. Soltar fora do pai é ignorado em
+   * silêncio, que é o comportamento menos surpreendente.
+   */
+  function handleDrop(toPath: EditPath): void {
+    const from = view.drag?.fromPath;
+    view.endDrag();
+
+    if (from === undefined || from.length !== toPath.length || from.length === 0) {
+      return;
+    }
+
+    const sameParent = from.slice(0, -1).every((index, position) => index === toPath[position]);
+
+    if (!sameParent) {
+      return;
+    }
+
+    const fromIndex = from[from.length - 1] as number;
+    const toIndex = toPath[toPath.length - 1] as number;
+    const delta = toIndex - fromIndex;
+
+    if (delta === 0) {
+      return;
+    }
+
+    const movedRow = view.tree.rows.find((row) => pathKey(row.path) === pathKey(from));
+
+    draft.edit((current) =>
+      movedRow?.isArrayItem
+        ? moveItem(current, from, delta)
+        : moveEntry(current, from, delta),
+    );
+
+    view.announce(
+      `${movedRow?.label ?? 'campo'} movido para a posição ${toIndex + 1} de ${
+        movedRow?.siblingCount ?? toIndex + 1
+      }.`,
+    );
+  }
+
+  const expandableKeys =
+    document === undefined ? [] : allContainerKeys(document, view.scopePath);
+  const allExpanded =
+    expandableKeys.length > 0 && expandableKeys.every((key) => view.tree.rows.some((row) => row.key === key && row.isExpanded));
+
   const changeSet = useMemo(() => {
     if (document === undefined || draft.baseDocument === undefined) {
       return undefined;
@@ -95,7 +143,6 @@ export default function ParameterEditor({
   }, [save, draft.baseDocument, document]);
 
   const canReview =
-    !readOnly &&
     draft.isDirty &&
     document !== undefined &&
     validation?.canSave === true &&
@@ -319,9 +366,46 @@ export default function ParameterEditor({
                   isRevealed: draft.isRevealed,
                   toggleRevealPath: draft.toggleRevealPath,
                   issuesByPath: issueIndex,
+                  onToggleExpanded: view.toggleExpanded,
+                  onDrillIn: view.drillInto,
+                  onAddChild: (path, containerKind) =>
+                    draft.edit((current) =>
+                      containerKind === 'array'
+                        ? appendItem(current, path, 'string')
+                        : appendEntry(current, path, '', 'string'),
+                    ),
+                  announce: view.announce,
+                  drag: view.drag,
+                  onDragStart: view.beginDrag,
+                  onDragOver: view.dragOver,
+                  onDrop: handleDrop,
+                  onDragEnd: view.endDrag,
                 }}
               >
-                <RootEditor node={document.root} />
+                <TreeToolbar
+                  query={view.searchQuery}
+                  onQueryChange={view.setSearchQuery}
+                  matchCount={view.tree.matchCount}
+                  isSearching={view.isSearching}
+                  allExpanded={allExpanded}
+                  onExpandAll={view.expandAll}
+                  onCollapseAll={view.collapseAll}
+                />
+
+                <TreeBreadcrumb
+                  segments={view.tree.scopeSegments}
+                  scopePath={view.scopePath}
+                  onNavigate={view.goToScope}
+                />
+
+                <TreeGrid
+                  tree={view.tree}
+                  scopeNode={view.tree.scopeNode}
+                  scopePath={view.scopePath}
+                  isSearching={view.isSearching}
+                  announcement={view.announcement}
+                  dragOverKey={view.drag?.overKey}
+                />
               </EditorProvider>
             )}
 
@@ -354,25 +438,13 @@ export default function ParameterEditor({
             <button
               type="button"
               disabled={!canReview || save.phase === 'saving'}
-              title={
-                readOnly
-                  ? 'A gravação no SSM real entra junto com o backup local'
-                  : reviewButtonHint(draft.isDirty, validation?.canSave, changeSet?.isEmpty)
-              }
+              title={reviewButtonHint(draft.isDirty, validation?.canSave, changeSet?.isEmpty)}
               onClick={() => setSave({ phase: 'reviewing' })}
             >
               {save.phase === 'saving' ? 'Gravando…' : 'Revisar e salvar'}
             </button>
           </footer>
 
-          {readOnly && (
-            <p className="notice foot-notice">
-              <strong>Somente leitura neste driver.</strong> Editar e validar funciona, mas gravar
-              no SSM real só depois que o backup local existir — nenhuma escrita em conta de
-              produção sem rede de proteção. Para exercitar o save, use{' '}
-              <code>STORE_DRIVER=local</code>.
-            </p>
-          )}
         </>
       )}
     </section>

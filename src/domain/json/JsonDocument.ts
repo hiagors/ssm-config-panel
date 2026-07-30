@@ -28,7 +28,7 @@ export interface SourceSpan {
 
 export type JsonNodeKind = 'string' | 'number' | 'boolean' | 'null' | 'object' | 'array';
 
-/** Os tipos que o seletor da UI oferece, na ordem em que aparecem. */
+/** Todos os tipos, na ordem em que aparecem na UI. */
 export const SELECTABLE_KINDS: readonly JsonNodeKind[] = [
   'string',
   'number',
@@ -37,6 +37,23 @@ export const SELECTABLE_KINDS: readonly JsonNodeKind[] = [
   'array',
   'null',
 ];
+
+/**
+ * Tipos que o seletor da linha oferece.
+ *
+ * Só escalares. Converter para `object` ou `array` saiu do seletor e virou ação
+ * de menu, com confirmação quando há conteúdo a perder: escolher "objeto" num
+ * `<select>` descartava o valor em silêncio, e um clique errado num select é
+ * fácil demais para uma ação destrutiva.
+ */
+export const SCALAR_KINDS: readonly JsonNodeKind[] = ['string', 'number', 'boolean', 'null'];
+
+/** Tipos que agrupam filhos. Conversão para estes passa pelo menu. */
+export const CONTAINER_KINDS: readonly JsonNodeKind[] = ['object', 'array'];
+
+export function isScalarKind(kind: JsonNodeKind): boolean {
+  return SCALAR_KINDS.includes(kind);
+}
 
 interface NodeBase {
   /** Identidade estável para key do React e para reordenar sem remontar. */
@@ -248,6 +265,50 @@ export function kindLabel(kind: JsonNodeKind): string {
       return 'lista';
     case 'null':
       return 'null';
+  }
+}
+
+/**
+ * Texto bruto de um escalar, ou `undefined` quando o nó não guarda texto.
+ *
+ * `string` e `number` guardam texto; `boolean` e `null` não — o modelo não tem
+ * onde pôr um booleano inválido. É essa assimetria que decide o que sobrevive a
+ * uma troca de tipo: ver `changeNodeKind`.
+ */
+export function scalarText(node: JsonNode): string | undefined {
+  switch (node.kind) {
+    case 'string':
+      return node.value;
+    case 'number':
+      return node.raw;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * `true` quando trocar o tipo deste nó destrói conteúdo de verdade.
+ *
+ * É o gatilho da confirmação. Campo vazio, `null` e container vazio **não**
+ * abrem diálogo: não há nada a perder, e pedir confirmação para uma operação
+ * inócua ensina o usuário a clicar em "confirmar" sem ler.
+ */
+export function hasContentToLose(node: JsonNode): boolean {
+  switch (node.kind) {
+    case 'string':
+      return node.value !== '';
+    case 'number':
+      return node.raw !== '';
+    case 'boolean':
+      // Um booleano é informação, mas cabe em qualquer conversão para texto e
+      // não sobrevive a nada mais. Ver a tabela em `changeNodeKind`.
+      return false;
+    case 'null':
+      return false;
+    case 'object':
+      return node.entries.length > 0;
+    case 'array':
+      return node.items.length > 0;
   }
 }
 

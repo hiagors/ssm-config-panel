@@ -5,6 +5,7 @@ import {
   isAppError,
 } from '../domain/errors.js';
 import { parseJsonDocument } from '../domain/json/parseJsonDocument.js';
+import type { BackupPort } from '../infrastructure/backup/BackupPort.js';
 import type { ParameterStorePort } from '../infrastructure/store/ParameterStorePort.js';
 import type { ValidationIssue } from './validation/validateDocument.js';
 import { validateDocument } from './validation/validateDocument.js';
@@ -35,6 +36,8 @@ import { validateDocument } from './validation/validateDocument.js';
  *    `Type`, `Tier` nem `KeyId` — nem por engano, nem de propósito.
  * 4. **Revalida no servidor.** O cliente já valida, mas validação de cliente é
  *    conveniência, não controle.
+ * 5. **Nunca grava sem backup.** A cópia da versão anterior vai para disco antes
+ *    do `put`, e falha de backup aborta a gravação.
  *
  * Honestidade sobre o limite: reler-comparar-gravar não é atômico, e o SSM não
  * tem put condicional. A janela cai de "todo o tempo de edição" para os
@@ -72,7 +75,17 @@ export type SaveOutcome =
     };
 
 export class SaveParameterUseCase {
-  constructor(private readonly store: ParameterStorePort) {}
+  constructor(
+    private readonly store: ParameterStorePort,
+    /**
+     * Rede de proteção. Obrigatória: sem backup não há gravação.
+     *
+     * Injetada em vez de opcional de propósito — um parâmetro com default
+     * permitiria construir o use case sem rede de proteção por esquecimento, e
+     * é exatamente o que o spec proíbe.
+     */
+    private readonly backup: BackupPort,
+  ) {}
 
   async execute(input: SaveParameterInput): Promise<SaveOutcome> {
     // 1. Relê. Também é o que descobre se o parâmetro existe.
@@ -98,7 +111,14 @@ export class SaveParameterUseCase {
       return this.conflict(input.expectedVersion, current.metadata, current.value);
     }
 
-    // 4. Grava preservando os metadados do original. O `expectedVersion` faz o
+    // 4. Backup da versão que está sendo sobrescrita, ANTES de gravar.
+    //
+    //    A ordem é o ponto: backup depois da gravação não protege de nada, e
+    //    falha de backup **aborta** o save. `BackupFailedError` sobe e a rota
+    //    devolve 500 com mensagem acionável — nada foi alterado no store.
+    await this.backup.save({ metadata: current.metadata, value: current.value });
+
+    // 5. Grava preservando os metadados do original. O `expectedVersion` faz o
     //    adapter checar de novo, mais perto do disco.
     try {
       const result = await this.store.put(input.name, input.value, {

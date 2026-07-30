@@ -1,6 +1,7 @@
 import {
   DescribeParametersCommand,
   GetParameterCommand,
+  PutParameterCommand,
   SSMClient,
 } from '@aws-sdk/client-ssm';
 import type { ParameterMetadata as AwsParameterMetadata } from '@aws-sdk/client-ssm';
@@ -18,6 +19,7 @@ import {
   ParameterNotFoundError,
   ProfileNotAuthenticatedError,
   StoreUnavailableError,
+  VersionMismatchError,
   WriteNotEnabledError,
   isAppError,
 } from '../../domain/errors.js';
@@ -28,6 +30,7 @@ import type {
   PutOptions,
   PutResult,
 } from './ParameterStorePort.js';
+import { EXPECT_NEW_PARAMETER } from './ParameterStorePort.js';
 
 /**
  * Adapter do SSM real. **Somente-leitura nesta fase.**
@@ -174,13 +177,65 @@ export class AwsSsmStoreAdapter implements ParameterStorePort {
   }
 
   /**
-   * Escrita desabilitada nesta fase.
+   * Grava com `PutParameter` e `Overwrite: true`, preservando os metadados.
    *
-   * Não é falta de implementação escondida: é decisão de sequência. Backup
-   * primeiro, escrita depois, no mesmo pacote.
+   * ── A ordem importa ─────────────────────────────────────────────────────────
+   *
+   * `DescribeParameters` **antes** do `PutParameter`, e não como otimização: é o
+   * que cumpre as duas garantias do port de uma vez.
+   *
+   * 1. **Nunca criar por efeito colateral.** `Overwrite: true` cria o parâmetro
+   *    se ele não existir. O Describe não encontrar nada é a única forma de
+   *    saber disso antes de gravar.
+   * 2. **Nunca sobrescrever às cegas.** O SSM não tem put condicional, então
+   *    comparar a `Version` lida agora com a esperada é tudo que existe.
+   *
+   * Consequência colateral e desejada: se faltar `ssm:DescribeParameters`, a
+   * escrita é **recusada**. Isso também fecha um risco de `Tier` — o `get()`
+   * cai para `Standard` quando não consegue descrever, e gravar com esse palpite
+   * poderia rebaixar um parâmetro `Advanced` e falhar num payload acima de 4 KB.
+   * Como escrever exige um Describe bem-sucedido, o `Tier` que chega aqui é
+   * sempre o real.
    */
-  async put(name: string, _value: string, _options: PutOptions): Promise<PutResult> {
-    throw new WriteNotEnabledError(parseParameterName(name));
+  async put(name: string, value: string, options: PutOptions): Promise<PutResult> {
+    const parameterName = parseParameterName(name);
+
+    if (options.expectedVersion === EXPECT_NEW_PARAMETER) {
+      // Criar é fluxo separado e explícito, fora de escopo por decisão.
+      throw new WriteNotEnabledError(parameterName);
+    }
+
+    const current = await this.describeOne(parameterName);
+
+    if (current === undefined) {
+      // Sem Describe não há como checar versão nem existência. Pode ser
+      // parâmetro inexistente ou falta de permissão; nos dois casos, não grava.
+      throw new ParameterNotFoundError(parameterName);
+    }
+
+    if (current.version !== options.expectedVersion) {
+      throw new VersionMismatchError(parameterName, options.expectedVersion, current.version);
+    }
+
+    const response = await this.run('PutParameter', () =>
+      this.getClient().send(
+        new PutParameterCommand({
+          Name: parameterName,
+          Value: value,
+          Overwrite: true,
+          // Metadados do original, sempre. O cliente não escolhe nenhum destes.
+          Type: current.type,
+          Tier: current.tier,
+          // KeyId só faz sentido em SecureString; enviá-lo em String é erro.
+          KeyId: current.type === 'SecureString' ? current.keyId : undefined,
+        }),
+      ),
+    );
+
+    return {
+      version: response.Version ?? current.version + 1,
+      tier: toParameterTier(response.Tier) ?? current.tier,
+    };
   }
 
   /**

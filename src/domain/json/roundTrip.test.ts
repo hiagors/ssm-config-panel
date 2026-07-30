@@ -230,6 +230,75 @@ describe('null vs string vazia nunca colapsam', () => {
   });
 });
 
+describe('troca de tipo preserva o texto bruto', () => {
+  it('texto inválido para número sobrevive, e a validação acusa', () => {
+    // O caso que motiva a regra: quem digitou "abc" num campo que deveria ser
+    // número quer corrigir, não redigitar. Resetar para 0 apagaria o trabalho e
+    // ainda esconderia o erro.
+    const document = parseOrThrow('{"a":"abc"}');
+
+    const converted = changeNodeKind(document, [0], 'number');
+    const node = converted.root.kind === 'object' ? converted.root.entries[0]?.value : undefined;
+
+    expect(node?.kind).toBe('number');
+    expect(node?.kind === 'number' && node.raw).toBe('abc');
+    expect(serializeJsonDocument(converted)).toBe('{"a":abc}');
+  });
+
+  it('número para texto preserva o lexema, inclusive o que Number destruiria', () => {
+    for (const [source, expected] of [
+      ['{"a":30.0}', '{"a":"30.0"}'],
+      ['{"a":9007199254740993}', '{"a":"9007199254740993"}'],
+      ['{"a":1e5}', '{"a":"1e5"}'],
+    ] as const) {
+      const document = parseOrThrow(source);
+
+      expect(serializeJsonDocument(changeNodeKind(document, [0], 'string'))).toBe(expected);
+    }
+  });
+
+  it('ida e volta texto → número → texto não perde nada', () => {
+    const document = parseOrThrow('{"a":"1.50"}');
+
+    const there = changeNodeKind(document, [0], 'number');
+    const back = changeNodeKind(there, [0], 'string');
+
+    expect(serializeJsonDocument(back)).toBe('{"a":"1.50"}');
+  });
+
+  it('campo vazio não carrega nada, e continua produzindo o padrão do tipo', () => {
+    expect(serializeJsonDocument(changeNodeKind(parseOrThrow('{"a":""}'), [0], 'number'))).toBe(
+      '{"a":0}',
+    );
+  });
+
+  it('booleano e null não têm texto, então caem no padrão', () => {
+    // Interpolar "true" como texto seria inventar conteúdo que não existia.
+    expect(serializeJsonDocument(changeNodeKind(parseOrThrow('{"a":true}'), [0], 'string'))).toBe(
+      '{"a":""}',
+    );
+    expect(serializeJsonDocument(changeNodeKind(parseOrThrow('{"a":null}'), [0], 'number'))).toBe(
+      '{"a":0}',
+    );
+  });
+
+  it('converter para container descarta, como a UI avisa antes', () => {
+    expect(serializeJsonDocument(changeNodeKind(parseOrThrow('{"a":"x"}'), [0], 'object'))).toBe(
+      '{"a":{}}',
+    );
+  });
+
+  it('a identidade do nó sobrevive, para o React não perder o foco', () => {
+    const document = parseOrThrow('{"a":"abc"}');
+    const before = document.root.kind === 'object' ? document.root.entries[0]?.value.id : undefined;
+
+    const converted = changeNodeKind(document, [0], 'number');
+    const after = converted.root.kind === 'object' ? converted.root.entries[0]?.value.id : undefined;
+
+    expect(after).toBe(before);
+  });
+});
+
 describe('reparse do que foi serializado é estável', () => {
   it('serializar, reparsear e serializar de novo dá o mesmo texto', () => {
     const source = '{\n  "a": 30.0,\n  "b": [1, "dois", null],\n  "c": {"d": true}\n}';

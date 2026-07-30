@@ -30,6 +30,9 @@ const { title, driver, profileName } = Astro.props;
         --ok: #4ade80;
         --warn: #fbbf24;
         --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+        --radius: 6px;
+        --tree-surface: #0c0e13;
+        --tree-row-header: var(--panel);
       }
 
       * {
@@ -191,7 +194,13 @@ const { title, driver, profileName } = Astro.props;
         background: #1f1315;
       }
 
-      /* ── editor de chave-valor ────────────────────────────────────────── */
+      /* ── editor: grade de árvore ──────────────────────────────────────────
+         UMA grid-template-columns para toda linha, em qualquer profundidade.
+         Antes, cada nível de aninhamento abria um container com grid próprio
+         dentro de uma largura já estreitada: a coluna de valor era recalculada
+         a cada nível e, com 3 níveis, sobrava ~30px para o input.
+         A profundidade agora existe só como padding-left na célula de chave.
+      */
 
       .back-link {
         margin: 0 0 0.5rem;
@@ -256,92 +265,344 @@ const { title, driver, profileName } = Astro.props;
         border-radius: 0 10px 10px 10px;
       }
 
-      .kv-block {
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
+      .icon {
+        flex: 0 0 auto;
+        display: block;
+      }
+
+      /* ── barra de busca ─────────────────────────────────────────────────── */
+
+      .tree-toolbar {
         display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-      }
-
-      .kv-empty {
-        margin: 0;
-        font-size: 13px;
-      }
-
-      .kv-row {
-        display: grid;
-        grid-template-columns: auto minmax(6rem, 14rem) auto 1fr auto;
-        align-items: start;
+        align-items: center;
         gap: 0.5rem;
+        margin-bottom: 0.75rem;
       }
 
-      .kv-row.has-error .key-input,
-      .value-input.invalid {
-        border-color: var(--danger);
-      }
-
-      .kv-reorder {
+      .tree-search {
+        flex: 1;
         display: flex;
-        flex-direction: column;
-        gap: 2px;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
       }
 
-      button.icon {
-        background: transparent;
+      input.search-input {
+        flex: 1;
+        min-width: 0;
+        height: 32px;
+        background: var(--tree-surface);
         border: 1px solid var(--border);
-        border-radius: 4px;
-        color: var(--muted);
-        font-size: 11px;
-        line-height: 1;
-        padding: 0.2rem 0.35rem;
-      }
-
-      button.icon.danger:hover {
-        color: var(--danger);
-        border-color: var(--danger);
-      }
-
-      button.icon.reveal {
-        font-size: 13px;
-      }
-
-      .key-input,
-      .value-input {
-        width: 100%;
-        background: #0c0e13;
-        border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: var(--radius);
         color: var(--text);
-        padding: 0.4rem 0.55rem;
+        padding: 0 0.6rem;
         font-family: var(--mono);
         font-size: 13px;
       }
 
-      .value-input.masked {
+      .search-count {
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      button.search-clear,
+      .tree-toolbar > button {
+        height: 32px;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      /* ── breadcrumb ─────────────────────────────────────────────────────── */
+
+      .breadcrumb {
+        margin-bottom: 0.6rem;
+      }
+
+      .breadcrumb ol {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .breadcrumb li {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        color: var(--muted);
+      }
+
+      button.crumb {
+        background: transparent;
+        border: 0;
+        padding: 0.1rem 0.2rem;
+        color: var(--accent);
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+
+      button.crumb:hover {
+        text-decoration: underline;
+      }
+
+      .crumb.current {
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 0.1rem 0.2rem;
+      }
+
+      /* ── a grade ────────────────────────────────────────────────────────── */
+
+      .tree {
+        background: var(--tree-surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      /* A MESMA declaração para cabeçalho e para toda linha. */
+      .tree-head,
+      .tree-row {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 190px) 92px minmax(0, 1fr) 56px;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .tree-head {
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .tree-row {
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--border);
+        min-height: 40px;
+      }
+
+      .tree-row:last-of-type {
+        border-bottom: 0;
+      }
+
+      .tree-row.is-header {
+        background: var(--tree-row-header);
+      }
+
+      .tree-row.is-drop-target {
+        outline: 1px solid var(--accent);
+        outline-offset: -1px;
+      }
+
+      .tree-empty {
+        margin: 0;
+        padding: 0.9rem 12px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .tree-foot {
+        display: flex;
+        gap: 0.5rem;
+        padding: 8px 12px;
+        border-top: 1px solid var(--border);
+      }
+
+      .tree-foot button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        height: 28px;
+        font-size: 12px;
+        padding: 0 0.6rem;
+      }
+
+      /* ── coluna 1: calha do grip, fora da indentação ────────────────────── */
+
+      .tree-gutter {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      button.grip {
+        background: transparent;
+        border: 0;
+        padding: 2px;
+        color: var(--muted);
+        cursor: grab;
+        border-radius: 3px;
+        /* Some por padrão; aparece no hover da linha E no foco por teclado —
+           senão quem navega por teclado não teria pista de que dá para
+           reordenar, já que arrastar não funciona por teclado. */
+        opacity: 0;
+        transition: opacity 90ms linear;
+      }
+
+      .tree-row:hover button.grip,
+      button.grip:focus-visible {
+        opacity: 1;
+      }
+
+      button.grip:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /* ── coluna 2: chave — a ÚNICA que conhece profundidade ─────────────── */
+
+      .tree-key {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        /* O padding-left vem inline, por nível. A borda é a guia da árvore e só
+           existe a partir do primeiro nível: na raiz seria uma linha solta. */
+        border-left: 1px solid transparent;
+      }
+
+      .tree-key.is-indented {
+        border-left-color: var(--border);
+        margin-left: 6px;
+      }
+
+      .tree-key > * {
+        min-width: 0;
+      }
+
+      button.tree-disclosure {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        background: transparent;
+        border: 0;
+        padding: 0.2rem 0.25rem;
+        color: var(--text);
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 13px;
+        text-align: left;
+        min-width: 0;
+      }
+
+      button.tree-disclosure .icon {
+        color: var(--muted);
+        transition: transform 90ms linear;
+      }
+
+      .tree-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+
+      .item-label {
+        color: var(--muted);
+        padding-left: 0.25rem;
+      }
+
+      .drill-hint {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--accent);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0 0.35rem;
+      }
+
+      input.key-input {
+        width: 100%;
+        min-width: 0;
+        height: 30px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        padding: 0 0.45rem;
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+
+      /* ── coluna 3: tipo ─────────────────────────────────────────────────── */
+
+      .tree-type {
+        min-width: 0;
+      }
+
+      .type-text {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .type-selector {
+        width: 100%;
+        height: 30px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        font-size: 12px;
+        padding: 0 0.2rem;
+      }
+
+      /* ── coluna 4: valor ───────────────────────────────────────────────── */
+
+      .tree-value {
+        min-width: 0;
+      }
+
+      .value-slot {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        min-width: 0;
+      }
+
+      input.value-input {
+        flex: 1;
+        min-width: 0;
+        height: 30px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
+        padding: 0 0.5rem;
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+
+      input.value-input.masked {
         color: var(--muted);
         letter-spacing: 0.1em;
       }
 
-      .type-selector {
-        background: #0c0e13;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        color: var(--text);
+      input.value-input.invalid,
+      input.key-input.invalid {
+        border-color: var(--danger);
+      }
+
+      .child-badge {
         font-size: 12px;
-        padding: 0.4rem 0.3rem;
-      }
-
-      .value-cell {
-        display: flex;
-        align-items: center;
-        gap: 0.35rem;
-      }
-
-      .item-index {
         color: var(--muted);
-        font-family: var(--mono);
-        font-size: 12px;
-        padding-top: 0.45rem;
-        min-width: 2.5rem;
       }
 
       .toggle {
@@ -354,42 +615,148 @@ const { title, driver, profileName } = Astro.props;
         color: var(--text);
       }
 
-      .nested {
-        width: 100%;
+      /* ── coluna 5: ação — dois slots de 28px ───────────────────────────── */
+
+      .tree-actions {
+        display: flex;
+        align-items: center;
+        gap: 0;
       }
 
-      button.nested-toggle {
+      button.row-action {
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: var(--muted);
+        cursor: pointer;
+        border-radius: 4px;
+        opacity: 0;
+        transition: opacity 90ms linear;
+      }
+
+      /* Revelar segredo é permanente: esconder no hover faria o usuário
+         procurar o olho num campo mascarado. */
+      button.row-action.reveal {
+        opacity: 1;
+      }
+
+      .tree-row:hover button.row-action,
+      button.row-action:focus-visible,
+      .kebab-wrapper[data-open='true'] button.row-action {
+        opacity: 1;
+      }
+
+      button.row-action:hover {
+        color: var(--text);
+      }
+
+      button.row-action.danger:hover {
+        color: var(--danger);
+      }
+
+      button.row-action:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+
+      /* ── kebab ──────────────────────────────────────────────────────────── */
+
+      .kebab-wrapper {
+        position: relative;
+        display: flex;
+      }
+
+      .kebab-menu {
+        position: absolute;
+        top: calc(100% + 2px);
+        right: 0;
+        z-index: 20;
+        min-width: 12rem;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.25rem;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+      }
+
+      .kebab-path {
+        margin: 0;
+        padding: 0.3rem 0.5rem;
         font-family: var(--mono);
-        font-size: 12px;
-        padding: 0.35rem 0.6rem;
+        font-size: 11px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        border-bottom: 1px solid var(--border);
       }
 
-      .nested-body {
-        border-left: 1px solid var(--border);
-        margin: 0.5rem 0 0.25rem;
-        padding-left: 0.75rem;
+      button.kebab-item {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: 0;
+        padding: 0.4rem 0.5rem;
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 400;
+        border-radius: 4px;
+        cursor: pointer;
       }
 
-      button.kv-add {
-        align-self: flex-start;
-        font-size: 12px;
-        padding: 0.35rem 0.7rem;
-        margin-top: 0.3rem;
+      button.kebab-item:hover {
+        background: var(--bg);
       }
 
-      .kv-issues {
+      button.kebab-item.danger {
+        color: var(--danger);
+      }
+
+      .convert-confirm {
+        position: absolute;
+        top: calc(100% + 2px);
+        right: 0;
+        z-index: 25;
+        width: 19rem;
+        background: var(--panel);
+        border: 1px solid var(--danger);
+        border-radius: 8px;
+        padding: 0.75rem;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+      }
+
+      .convert-confirm p {
+        margin: 0 0 0.7rem;
+        font-size: 13px;
+      }
+
+      .convert-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.4rem;
+      }
+
+      /* ── validação por linha ───────────────────────────────────────────── */
+
+      .tree-issues {
         grid-column: 2 / -1;
         list-style: none;
-        margin: 0;
+        margin: 0.15rem 0 0;
         padding: 0;
         font-size: 12px;
       }
 
-      .kv-issues li.error {
+      .tree-issues li.error {
         color: var(--danger);
       }
 
-      .kv-issues li.warning {
+      .tree-issues li.warning {
         color: var(--warn);
       }
 
@@ -397,9 +764,9 @@ const { title, driver, profileName } = Astro.props;
         width: 100%;
         min-height: 20rem;
         resize: vertical;
-        background: #0c0e13;
+        background: var(--tree-surface);
         border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: var(--radius);
         color: var(--text);
         padding: 0.7rem;
         font-family: var(--mono);
@@ -474,7 +841,6 @@ const { title, driver, profileName } = Astro.props;
         text-align: right;
         margin: 0.5rem 0 0;
       }
-
       /* ── diff e conflito ──────────────────────────────────────────────── */
 
       .notice.success {

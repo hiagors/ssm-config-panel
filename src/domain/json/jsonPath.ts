@@ -112,3 +112,72 @@ export function displayPath(root: JsonNode, path: EditPath): string {
 export function displayPathIn(document: JsonDocument, path: EditPath): string {
   return displayPath(document.root, path);
 }
+
+/**
+ * Segmentos textuais do caminho, sem separador nenhum.
+ *
+ * Chave de objeto entra como está; índice de lista entra como o número. É a
+ * forma canônica para exibir e para casar busca.
+ */
+export function pathSegments(root: JsonNode, path: EditPath): string[] {
+  let current: JsonNode = root;
+  const segments: string[] = [];
+
+  for (const index of path) {
+    if (current.kind === 'object') {
+      const entry = current.entries[index];
+      if (entry === undefined) {
+        return segments;
+      }
+      segments.push(entry.key);
+      current = entry.value;
+      continue;
+    }
+
+    if (current.kind === 'array') {
+      const item = current.items[index];
+      if (item === undefined) {
+        return segments;
+      }
+      segments.push(String(index));
+      current = item;
+      continue;
+    }
+
+    return segments;
+  }
+
+  return segments;
+}
+
+/**
+ * Caminho na forma com pontos: `db_connections.banking.database`.
+ *
+ * É a notação da árvore e do breadcrumb. O diff e as mensagens de validação
+ * seguem usando `displayPath`, com barra e colchete — as duas convivem de
+ * propósito, e a busca aceita ambas para que um caminho copiado de uma mensagem
+ * de validação encontre resultado. Ver `normalizePathQuery`.
+ */
+export function dottedPath(root: JsonNode, path: EditPath): string {
+  const segments = pathSegments(root, path);
+
+  return segments.length === 0 ? '' : segments.join('.');
+}
+
+/**
+ * Quebra um caminho escrito à mão em segmentos comparáveis.
+ *
+ * Ponto, barra e colchete são tratados como **o mesmo separador**. Isso é o que
+ * faz `/DATABASE/pool/min`, `DATABASE.pool.min` e `DATABASE/pool[0]` chegarem à
+ * mesma lista — e é o que permite colar um caminho vindo de uma mensagem de
+ * validação, que usa a outra notação, direto no campo de busca.
+ *
+ * Devolve em minúsculas: a comparação não diferencia caixa.
+ */
+export function normalizePathQuery(raw: string): string[] {
+  return raw
+    .toLowerCase()
+    .split(/[./[\]]+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== '');
+}

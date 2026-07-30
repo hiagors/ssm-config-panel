@@ -71,8 +71,9 @@ if (driver === 'local') {
   {
     driver === 'aws' && (
       <p class="notice">
-        <strong>Somente leitura.</strong> O adapter da AWS não grava ainda — a escrita entra junto
-        com o backup local, para que nenhuma gravação em conta real aconteça sem rede de proteção.
+        <strong>Gravação habilitada.</strong> Toda escrita passa por diff com confirmação, recheque
+        de versão no servidor, e backup da versão anterior em <code>./.backups</code> — falha de
+        backup aborta a gravação.
       </p>
     )
   }
