@@ -4,6 +4,7 @@ import type { ValidationIssue } from '../../application/validation/validateDocum
 import { issuesByPath, validateDocument } from '../../application/validation/validateDocument.js';
 import { appendEntry, appendItem, moveEntry, moveItem } from '../../domain/json/editOperations.js';
 import { parseJsonDocument } from '../../domain/json/parseJsonDocument.js';
+import { prettyPrintDocument } from '../../domain/json/prettyPrint.js';
 import { structuralDiff, threeWayDiff } from '../../domain/json/structuralDiff.js';
 import type { EditPath } from '../../domain/json/jsonPath.js';
 import { pathKey } from '../../domain/json/jsonPath.js';
@@ -11,6 +12,7 @@ import ConflictView from './ConflictView.js';
 import DiffView from './DiffView.js';
 import { EditorProvider } from './EditorContext.js';
 import RawJsonEditor from './RawJsonEditor.js';
+import SessionExpiredBanner from './SessionExpiredBanner.js';
 import TreeBreadcrumb from './TreeBreadcrumb.js';
 import TreeGrid from './TreeGrid.js';
 import TreeToolbar from './TreeToolbar.js';
@@ -19,6 +21,7 @@ import { allContainerKeys } from './treeRows.js';
 import { saveParameter } from './saveParameter.js';
 import { useParameterDraft } from './useParameterDraft.js';
 import { useTreeView } from './useTreeView.js';
+import { useUnsavedChangesWarning } from './useUnsavedChangesWarning.js';
 
 /**
  * Ilha de topo do editor.
@@ -47,7 +50,9 @@ type SavePhase =
       readonly currentVersion: number;
     }
   | { readonly phase: 'rejected'; readonly issues: readonly ValidationIssue[] }
-  | { readonly phase: 'failed'; readonly message: string };
+  | { readonly phase: 'failed'; readonly message: string }
+  /** Token do SSO venceu. Banner não-bloqueante, rascunho intacto. */
+  | { readonly phase: 'sessionExpired' };
 
 export default function ParameterEditor({ parameter, profileName }: Props) {
   const draft = useParameterDraft(
@@ -57,6 +62,11 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
   );
 
   const [save, setSave] = useState<SavePhase>({ phase: 'editing' });
+  const [isPretty, setIsPretty] = useState(false);
+
+  // Fechar, recarregar ou voltar para a tela inicial com rascunho pendente pede
+  // confirmação. A volta à tela inicial é onde se troca de profile.
+  useUnsavedChangesWarning(draft.isDirty);
 
   const { state } = draft;
   const document = state.content.kind === 'structured' ? state.content.document : undefined;
@@ -73,6 +83,27 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
   );
 
   const view = useTreeView(document);
+
+  /**
+   * Texto formatado da aba crua.
+   *
+   * Derivado do documento a cada render e jogado fora: **não** entra no
+   * rascunho. Formatar de verdade marcaria todo nó como `dirty`, destruiria a
+   * reemissão verbatim e faria um save sem edição reescrever o parâmetro
+   * inteiro — além de encher o diff.
+   *
+   * `undefined` quando não há documento, ou quando formatar não mudaria nada:
+   * oferecer um toggle sem efeito visível é ruído.
+   */
+  const prettyText = useMemo(() => {
+    if (document === undefined) {
+      return undefined;
+    }
+
+    const formatted = prettyPrintDocument(document);
+
+    return formatted === draft.currentText ? undefined : formatted;
+  }, [document, draft.currentText]);
 
   /**
    * Solta a linha arrastada sobre outra.
@@ -159,7 +190,13 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
     );
 
     if (!result.ok) {
-      setSave({ phase: 'failed', message: result.message });
+      // Expiração de token é estado, não erro: banner e reautenticação sem
+      // recarregar, com o rascunho onde está.
+      setSave(
+        result.code === 'PROFILE_NOT_AUTHENTICATED'
+          ? { phase: 'sessionExpired' }
+          : { phase: 'failed', message: result.message },
+      );
       return;
     }
 
@@ -252,6 +289,13 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
       )}
 
       {save.phase === 'failed' && <p className="notice error">{save.message}</p>}
+
+      {save.phase === 'sessionExpired' && (
+        <SessionExpiredBanner
+          profileName={profileName}
+          onReauthenticated={() => setSave({ phase: 'editing' })}
+        />
+      )}
 
       {save.phase === 'rejected' && (
         <div className="notice error">
@@ -416,6 +460,9 @@ export default function ParameterEditor({ parameter, profileName }: Props) {
                 parseError={state.content.kind === 'rawInvalid' ? state.content.error : undefined}
                 masked={parameter.isSecret && !state.revealAll && state.revealedPaths.size === 0}
                 onRevealAll={draft.toggleRevealAll}
+                prettyText={prettyText}
+                isPretty={isPretty}
+                onTogglePretty={() => setIsPretty((current) => !current)}
               />
             )}
           </div>

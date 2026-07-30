@@ -7,9 +7,14 @@
  * validação e o diff usam barra, e colar um caminho de lá aqui precisa
  * funcionar — senão a notação dupla vira armadilha em vez de conveniência.
  *
- * O casamento é por segmento: cada termo tem de estar **dentro** de um segmento,
- * sem atravessar separador. `pool.min` casa `DATABASE.pool.min`; `db.min` não
- * casa `db.pool.min`, porque pularia um nível.
+ * O casamento é de **segmento completo**, não de pedaço de nome: `banking` casa
+ * a chave `banking`, e `bank` não casa nada. Filtro por substring devolveria
+ * resultado que ninguém pediu — `db` traria `db_connections`, `db_host` e
+ * `old_db` juntos — e num editor de configuração de produção o resultado precisa
+ * ser exatamente o que se digitou.
+ *
+ * Os segmentos precisam ser consecutivos: `pool.min` casa `DATABASE.pool.min`;
+ * `db.min` não casa `db.pool.min`, porque pularia um nível.
  */
 
 interface Props {

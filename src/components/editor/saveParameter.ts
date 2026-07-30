@@ -12,7 +12,18 @@ import type { SaveOutcome } from '../../application/SaveParameterUseCase.js';
 
 export type SaveRequestResult =
   | { readonly ok: true; readonly outcome: SaveOutcome }
-  | { readonly ok: false; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly message: string;
+      /**
+       * Código estável do erro, quando o servidor mandou um.
+       *
+       * A UI ramifica em cima dele: `PROFILE_NOT_AUTHENTICATED` não é tela de
+       * erro, é banner com botão de reautenticar — o token do SSO dura horas e
+       * expirar no meio de uma edição é rotina, não falha.
+       */
+      readonly code: string | undefined;
+    };
 
 export async function saveParameter(
   name: string,
@@ -43,6 +54,7 @@ export async function saveParameter(
     // Nunca inclua `value` na mensagem: pode ser SecureString decriptado.
     return {
       ok: false,
+      code: undefined,
       message: 'Não foi possível falar com o servidor. Ele ainda está rodando?',
     };
   }
@@ -53,6 +65,7 @@ export async function saveParameter(
   } catch {
     return {
       ok: false,
+      code: undefined,
       message: `O servidor respondeu ${response.status} com um corpo que não é JSON.`,
     };
   }
@@ -63,11 +76,12 @@ export async function saveParameter(
 
   // Resposta de erro do mapper central: `{ error: { code, message } }`, já
   // redigida no servidor.
-  const message = errorMessageOf(body);
-
   return {
     ok: false,
-    message: message ?? `O servidor respondeu ${response.status} sem detalhe utilizável.`,
+    code: errorFieldOf(body, 'code'),
+    message:
+      errorFieldOf(body, 'message') ??
+      `O servidor respondeu ${response.status} sem detalhe utilizável.`,
   };
 }
 
@@ -83,7 +97,7 @@ function isSaveOutcome(body: unknown): body is SaveOutcome {
   );
 }
 
-function errorMessageOf(body: unknown): string | undefined {
+function errorFieldOf(body: unknown, field: 'code' | 'message'): string | undefined {
   if (typeof body !== 'object' || body === null) {
     return undefined;
   }
@@ -94,7 +108,7 @@ function errorMessageOf(body: unknown): string | undefined {
     return undefined;
   }
 
-  const message = (error as { message?: unknown }).message;
+  const value = (error as Record<string, unknown>)[field];
 
-  return typeof message === 'string' ? message : undefined;
+  return typeof value === 'string' ? value : undefined;
 }

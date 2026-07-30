@@ -3,9 +3,12 @@
 Ferramenta web **local** para visualizar, validar e editar parâmetros JSON no AWS SSM Parameter
 Store. Roda na sua máquina, em loopback, e substitui a edição de JSON cru no console da AWS.
 
-> **Estado atual: Fase 3 concluída.** Lê e grava no SSM real, com seletor de profiles, login SSO,
-> `SecureString` decriptado, e backup da versão anterior antes de cada gravação. Falta a Fase 4:
-> testes restantes e documentação. Veja [Roadmap](#roadmap).
+> **Estado atual: todas as fases concluídas.** Lê e grava no SSM real, com seletor de profiles,
+> login SSO, `SecureString` decriptado, diff obrigatório, proteção contra escrita concorrente e
+> backup da versão anterior antes de cada gravação.
+>
+> Fora de escopo por decisão: histórico (`GetParameterHistory`) e fluxo de criação de parâmetro —
+> o rollback é coberto pelos backups locais.
 
 ## Pré-requisitos
 
@@ -123,12 +126,15 @@ limite de tamanho da validação depende do `Tier`. Os dois campos só existem e
 que vem de `DescribeParameters` ou de `GetParameterHistory` — e o histórico pagina em ordem
 crescente de versão, então pegar a atual exigiria percorrer tudo.
 
-Duas consequências:
+A política pronta está em [docs/iam-policy.json](docs/iam-policy.json). Ela diverge da lista do spec
+em três pontos:
 
-- `ssm:DescribeParameters` **não aceita permissão por recurso**: tem de ser `Resource: "*"`.
-- `ssm:GetParametersByPath` deixou de ser necessário. A listagem usa `DescribeParameters`, que
-  devolve **só metadados** — `GetParametersByPath` traria os valores, carregando segredo na memória
-  do servidor só para desenhar uma lista.
+- `ssm:DescribeParameters` **entra**, e **não aceita permissão por recurso**: tem de ser
+  `Resource: "*"`. É a única concessão de escopo do desenho.
+- `ssm:GetParametersByPath` **sai**. A listagem usa `DescribeParameters`, que devolve **só
+  metadados** — `GetParametersByPath` traria os valores, carregando segredo na memória do servidor
+  só para desenhar uma lista.
+- `ssm:GetParameterHistory` **sai**, porque histórico ficou fora de escopo.
 
 Sem `ssm:DescribeParameters` a leitura ainda funciona: o `Tier` cai para `Standard` e o `KeyId` fica
 vazio. O aviso de tamanho fica conservador e a gravação de `SecureString` não terá a chave para
@@ -341,9 +347,8 @@ tratadas em [csrf.ts](src/infrastructure/http/csrf.ts) e aplicadas no middleware
   fluxo separado e explícito, fora de escopo por decisão.
 - **Sem histórico e sem fluxo de criação de parâmetro**, por decisão de escopo: usar a ferramenta
   por duas semanas antes de decidir se fazem falta.
-- **Sem pretty-print da aba JSON cru.** Um parâmetro minificado de linha única é navegável pelo
-  formulário, mas a aba de texto cru mostra uma linha só. O toggle de visualização está previsto no
-  spec e ainda não foi feito.
+- **A busca do editor casa segmento completo**, não pedaço de nome: `banking` encontra a chave
+  `banking`, `bank` não encontra nada. Filtro por substring devolveria resultado que ninguém pediu.
 - **Diff de lista é por índice.** Item de lista não tem chave, então inserir no começo marca os
   índices seguintes como alterados. É verdade — os índices mudaram — mas é ruidoso. Objetos casam
   por chave e não sofrem disso.
@@ -361,9 +366,9 @@ tratadas em [csrf.ts](src/infrastructure/http/csrf.ts) e aplicadas no middleware
 - **Raiz que não é objeto nem lista** (um parâmetro cujo valor é só uma string, por exemplo) não
   tem formulário de chave-valor: cai na aba JSON cru, com aviso.
 - **Chave terminada em `.meta`** é rejeitada no driver local, porque colidiria com o sidecar.
-- **`history()` no driver local** devolve apenas a versão atual. O store em arquivos não guarda
-  versões anteriores; o histórico real vem dos backups (Fase 4) e do `GetParameterHistory`
-  (Fase 3).
+- **Sem histórico.** O port não expõe `history()` e a policy não pede `ssm:GetParameterHistory` —
+  manter um método que nenhum use case chama seria contrato mentindo sobre capacidade. Para
+  rollback, use os backups em `./.backups`, ou o histórico nativo pelo console da AWS.
 - **Colisão de caixa no APFS.** O sistema de arquivos do macOS não distingue maiúsculas de
   minúsculas, mas o SSM sim. `/prod/env` e `/Prod/env` são parâmetros diferentes na AWS e
   colidiriam no mesmo arquivo local. O adapter **detecta e falha com HTTP 409** em vez de devolver
@@ -387,8 +392,10 @@ src/
     store/          # ParameterStorePort + adapters + composition root
 ```
 
-O diagrama e o contrato completo do `ParameterStorePort` vão em `docs/architecture.md` na Fase 4.
-O contrato está em [src/infrastructure/store/ParameterStorePort.ts](src/infrastructure/store/ParameterStorePort.ts).
+O diagrama das camadas, o fluxo de uma gravação e o contrato completo do `ParameterStorePort` estão
+em [docs/architecture.md](docs/architecture.md). O contrato em código fica em
+[ParameterStorePort.ts](src/infrastructure/store/ParameterStorePort.ts), e a política mínima de IAM
+em [docs/iam-policy.json](docs/iam-policy.json).
 
 ## Roadmap
 
@@ -400,8 +407,9 @@ O contrato está em [src/infrastructure/store/ParameterStorePort.ts](src/infrast
 - [x] **Fase 3a** — seletor de profiles (com os sem SSO bloqueados), login SSO, `AwsSsmStoreAdapter`
       somente-leitura, `SecureString` real, sessão do Astro desligada.
 - [x] **Fase 3b** — backup local + retenção, e a escrita no SSM real habilitada em cima disso.
-- [ ] **Fase 4** — testes restantes e documentação (`docs/architecture.md`,
-      `docs/iam-policy.json`). Histórico e fluxo de criação ficaram fora por decisão de escopo.
+- [x] **Fase 4** — pretty-print como visualização, expiração de sessão como estado de primeira
+      classe, aviso de rascunho não salvo, testes restantes,
+      [docs/architecture.md](docs/architecture.md) e [docs/iam-policy.json](docs/iam-policy.json).
 
 ### Critérios de aceitação
 
@@ -409,12 +417,34 @@ O contrato está em [src/infrastructure/store/ParameterStorePort.ts](src/infrast
       *(name + Enter, editar campo, Revisar e salvar, Confirmar = 4.)*
 - [x] Nunca salvar por acidente: toda gravação passa por diff + confirmação.
 - [x] JSON aninhado de 3 níveis editável sem tocar em texto cru.
-- [ ] Sessão SSO expirando no meio da edição não faz perder o que foi digitado.
-- [ ] Trocar de profile com rascunho pendente sempre pede confirmação.
+- [x] Um parâmetro minificado de linha única é legível e navegável na UI.
+      *(formulário em árvore, mais o toggle de formatação na aba crua.)*
+- [x] Sessão SSO expirando no meio da edição não faz perder o que foi digitado.
+      *(banner não-bloqueante com reautenticação sem recarregar; o rascunho vive no estado do
+      React e não é tocado.)*
+- [x] Trocar de profile com rascunho pendente sempre pede confirmação.
+      *(cada rota é uma carga de página, então o aviso de saída cobre fechar, recarregar e voltar
+      à tela inicial — que é onde se troca de profile.)*
 - [x] Round-trip de um parâmetro sem alterações produz diff vazio.
 - [x] Alteração externa entre carregar e salvar é sempre detectada, nunca sobrescrita.
 - [x] Parameter name inexistente nunca vira criação acidental.
-- [x] Erros aparecem com mensagem acionável, não com stack trace. *(mecanismo pronto; os erros da
-      AWS em si entram na Fase 3.)*
+- [x] Erros aparecem com mensagem acionável, não com stack trace.
 - [x] Compartilhar a tela com um parâmetro `SecureString` aberto não expõe valor sem ação
       deliberada.
+
+### O que os testes garantem
+
+| Garantia | Onde |
+| --- | --- |
+| round-trip byte-idêntico, ordem de chaves, `30.0`, inteiro acima de 2^53, `null` vs `""` | [roundTrip.test.ts](src/domain/json/roundTrip.test.ts) |
+| duplicata detectada, não descartada | [validateDocument.test.ts](src/application/validation/validateDocument.test.ts) |
+| pretty-print ligado + save = nenhuma mudança | [prettyPrint.test.ts](src/domain/json/prettyPrint.test.ts) |
+| valor sentinela não sobrevive a nenhum caminho de erro, nem no log | [\_http.test.ts](src/pages/api/_http.test.ts) |
+| `no-store` em resposta de página, não só de API | [noStore.test.ts](src/infrastructure/http/noStore.test.ts) |
+| requisição não-GET com `Origin`/`Host` inesperado é rejeitada | [csrf.test.ts](src/infrastructure/http/csrf.test.ts) |
+| lost update aborta e o arquivo em disco fica intacto | [LocalFileStoreAdapter.test.ts](src/infrastructure/store/LocalFileStoreAdapter.test.ts) |
+| save em name inexistente não cria | [SaveParameterUseCase.test.ts](src/application/SaveParameterUseCase.test.ts) |
+| backup acontece antes do `put`, e falha de backup aborta | [SaveParameterUseCase.test.ts](src/application/SaveParameterUseCase.test.ts) |
+| o backup mais recente nunca é podado | [retention.test.ts](src/infrastructure/backup/retention.test.ts) |
+| nenhum módulo da ilha usa API só-de-Node | [browserSafety.test.ts](src/components/editor/browserSafety.test.ts) |
+| sessão do Astro não escreve em disco | [astroConfig.test.ts](src/astroConfig.test.ts) |

@@ -84,9 +84,6 @@ class FakeStore implements ParameterStorePort {
     return { version: metadata.version, tier: options.tier };
   }
 
-  async history(name: string): Promise<Parameter[]> {
-    return [await this.get(name)];
-  }
 }
 
 /**

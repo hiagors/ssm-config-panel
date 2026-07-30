@@ -201,8 +201,17 @@ describe('busca por caminho', () => {
     expect(expanded.some((row) => row.label === 'banking')).toBe(true);
   });
 
-  it('substring dentro do segmento casa', () => {
-    expect(labels(NESTED, [], 'bank')).toEqual(['db_connections', 'banking', 'database', 'schema', 'secret']);
+  it('pedaço de nome NÃO casa: só segmento completo', () => {
+    // Filtro por substring traria db_connections, db_host e old_db juntos para
+    // uma busca por "db". Num editor de produção o resultado precisa ser
+    // exatamente o que se digitou.
+    expect(labels(NESTED, [], 'bank')).toEqual([]);
+    expect(labels(NESTED, [], 'banking')).toEqual(['db_connections', 'banking', 'database', 'schema', 'secret']);
+  });
+
+  it('prefixo de segmento também não casa', () => {
+    expect(labels(NESTED, [], 'db_conn')).toEqual([]);
+    expect(labels(NESTED, [], 'db_connections')).not.toEqual([]);
   });
 
   it('a busca não diferencia caixa', () => {
@@ -287,8 +296,9 @@ describe('matchesSegmentWindow', () => {
     expect(matchesSegmentWindow(['ab', 'cd'], ['abcd'])).toBe(false);
   });
 
-  it('substring dentro de um segmento casa', () => {
-    expect(matchesSegmentWindow(['db_connections'], ['conn'])).toBe(true);
+  it('substring dentro de um segmento NÃO casa', () => {
+    expect(matchesSegmentWindow(['db_connections'], ['conn'])).toBe(false);
+    expect(matchesSegmentWindow(['db_connections'], ['db_connections'])).toBe(true);
   });
 });
 

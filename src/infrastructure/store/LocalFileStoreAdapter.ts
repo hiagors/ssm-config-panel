@@ -4,7 +4,6 @@ import { access, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:
 import { dirname, join, relative, resolve } from 'node:path';
 import type {
   Parameter,
-  ParameterHistoryEntry,
   ParameterMetadata,
   ParameterTier,
   ParameterType,
@@ -126,18 +125,6 @@ export class LocalFileStoreAdapter implements ParameterStorePort {
     );
 
     return { version, tier: options.tier };
-  }
-
-  /**
-   * O store local não guarda versões anteriores.
-   *
-   * A Fase 4 vai ler o histórico dos backups em `./.backups/<name>/`, que é
-   * onde as versões antigas efetivamente ficam. Até lá devolve só a atual,
-   * para o contrato do port valer nos dois adapters.
-   */
-  async history(name: string): Promise<ParameterHistoryEntry[]> {
-    const current = await this.get(name);
-    return [{ metadata: current.metadata, value: current.value }];
   }
 
   /**

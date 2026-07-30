@@ -1,6 +1,5 @@
 import type {
   Parameter,
-  ParameterHistoryEntry,
   ParameterMetadata,
   ParameterTier,
   ParameterType,
@@ -49,9 +48,6 @@ export interface ParameterStorePort {
    * @throws {ParameterAlreadyExistsError} quando se esperava criar e já existe.
    */
   put(name: string, value: string, options: PutOptions): Promise<PutResult>;
-
-  /** Histórico de versões, da mais recente para a mais antiga. */
-  history(name: string): Promise<ParameterHistoryEntry[]>;
 }
 
 export interface ListOptions {

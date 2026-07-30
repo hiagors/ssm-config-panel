@@ -21,6 +21,15 @@ interface Props {
   /** `true` quando o parâmetro é `SecureString` e nada foi revelado. */
   readonly masked: boolean;
   readonly onRevealAll: () => void;
+  /**
+   * Texto formatado para leitura, quando o toggle está ligado.
+   *
+   * `undefined` desliga o toggle — ou porque o JSON está inválido, ou porque
+   * formatar não mudaria nada.
+   */
+  readonly prettyText: string | undefined;
+  readonly isPretty: boolean;
+  readonly onTogglePretty: () => void;
 }
 
 export default function RawJsonEditor({
@@ -29,6 +38,9 @@ export default function RawJsonEditor({
   parseError,
   masked,
   onRevealAll,
+  prettyText,
+  isPretty,
+  onTogglePretty,
 }: Props) {
   if (masked) {
     return (
@@ -44,6 +56,8 @@ export default function RawJsonEditor({
     );
   }
 
+  const showingPretty = isPretty && prettyText !== undefined;
+
   return (
     <div>
       {parseError !== undefined && (
@@ -53,20 +67,48 @@ export default function RawJsonEditor({
         </p>
       )}
 
-      <textarea
-        className={`raw-editor${parseError !== undefined ? ' invalid' : ''}`}
-        value={text}
-        onChange={(event) => onChange(event.target.value)}
-        rows={20}
-        aria-label="JSON cru"
-        aria-invalid={parseError !== undefined || undefined}
-        spellCheck={false}
-        autoComplete="off"
-        autoCapitalize="off"
-        autoCorrect="off"
-        data-1p-ignore=""
-        data-lpignore="true"
-      />
+      {prettyText !== undefined && (
+        <div className="raw-toolbar">
+          <label className="toggle">
+            <input type="checkbox" checked={isPretty} onChange={onTogglePretty} />
+            <span>Formatar para leitura</span>
+          </label>
+          {showingPretty && (
+            <span className="muted raw-hint">
+              Só visualização. O texto gravado continua sendo o original — ligar isto e salvar não
+              muda nada.
+            </span>
+          )}
+        </div>
+      )}
+
+      {showingPretty ? (
+        // Somente-leitura de propósito: editar o texto formatado e devolvê-lo ao
+        // documento reformataria o parâmetro inteiro num save sem edição.
+        <textarea
+          className="raw-editor is-pretty"
+          value={prettyText}
+          readOnly
+          rows={20}
+          aria-label="JSON formatado para leitura"
+          spellCheck={false}
+        />
+      ) : (
+        <textarea
+          className={`raw-editor${parseError !== undefined ? ' invalid' : ''}`}
+          value={text}
+          onChange={(event) => onChange(event.target.value)}
+          rows={20}
+          aria-label="JSON cru"
+          aria-invalid={parseError !== undefined || undefined}
+          spellCheck={false}
+          autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
+          data-1p-ignore=""
+          data-lpignore="true"
+        />
+      )}
     </div>
   );
 }

@@ -7,7 +7,6 @@ import {
 import type { ParameterMetadata as AwsParameterMetadata } from '@aws-sdk/client-ssm';
 import type {
   Parameter,
-  ParameterHistoryEntry,
   ParameterMetadata,
   ParameterTier,
   ParameterType,
@@ -33,11 +32,11 @@ import type {
 import { EXPECT_NEW_PARAMETER } from './ParameterStorePort.js';
 
 /**
- * Adapter do SSM real. **Somente-leitura nesta fase.**
+ * Adapter do SSM real: lê e grava.
  *
- * `put()` lança `WriteNotEnabledError` de propósito: nenhuma escrita em conta
- * real antes de existir backup local. Liberar a escrita é o próximo pacote,
- * junto com o backup e a retenção.
+ * A gravação só existe porque o backup existe — `SaveParameterUseCase` copia a
+ * versão anterior para `./.backups` antes de chamar `put`, e falha de backup
+ * aborta o save. Nenhuma escrita em conta real sem rede de proteção.
  *
  * ── Por que `DescribeParameters` ────────────────────────────────────────────
  *
@@ -47,9 +46,9 @@ import { EXPECT_NEW_PARAMETER } from './ParameterStorePort.js';
  * limite de tamanho da validação depende do `Tier`.
  *
  * Os dois campos só aparecem em `ParameterMetadata`, que vem de
- * `DescribeParameters` ou de `GetParameterHistory`. `GetParameterHistory`
- * pagina em ordem crescente de versão, então pegar a atual exigiria percorrer
- * o histórico inteiro. Sobra `DescribeParameters`, com filtro `Name/Equals`.
+ * `DescribeParameters` — e `GetParameterHistory`, que pagina em ordem crescente
+ * de versão e exigiria percorrer o histórico inteiro para chegar na atual.
+ * Sobra `DescribeParameters`, com filtro `Name/Equals`.
  *
  * Consequência de IAM, documentada no README: é preciso `ssm:DescribeParameters`
  * além do que o spec lista, e essa ação **não aceita permissão por recurso** —
@@ -236,17 +235,6 @@ export class AwsSsmStoreAdapter implements ParameterStorePort {
       version: response.Version ?? current.version + 1,
       tier: toParameterTier(response.Tier) ?? current.tier,
     };
-  }
-
-  /**
-   * Histórico fora de escopo nesta fase, por decisão explícita.
-   *
-   * Devolve a versão atual para o contrato do port valer nos dois adapters,
-   * igual ao driver local.
-   */
-  async history(name: string): Promise<ParameterHistoryEntry[]> {
-    const current = await this.get(name);
-    return [{ metadata: current.metadata, value: current.value }];
   }
 
   /** Metadados de um parâmetro específico, via filtro de nome exato. */

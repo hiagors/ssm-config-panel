@@ -233,12 +233,9 @@ interface SearchVisibility {
 /**
  * Descobre o que a busca torna visível.
  *
- * O casamento é **por segmento**: cada segmento da consulta tem de ser
- * substring do segmento correspondente do caminho, sem atravessar separador.
- * Assim `conn.bank` casa `db_connections.banking` mas `connections.bank` não
- * casa `db_connections.banking` pela metade errada — e, principalmente,
- * `db.min` não casa `db_connections.pool.min`, porque os segmentos precisam ser
- * **consecutivos**.
+ * O casamento é de **segmento completo e consecutivo**: `db_connections.banking`
+ * casa esse caminho, `banking` casa a chave `banking` em qualquer nível, e
+ * `bank` não casa nada. Ver `matchesSegmentWindow`.
  */
 function collectSearchMatches(
   scopePath: EditPath,
@@ -297,8 +294,19 @@ function collectSearchMatches(
 /**
  * `true` quando existe uma janela consecutiva de segmentos que casa a consulta.
  *
- * Cada segmento da consulta precisa ser substring do segmento correspondente —
- * substring **dentro** do segmento, nunca atravessando o separador.
+ * O casamento é de **segmento completo**, não de substring: `banking` casa a
+ * chave `banking`, e `bank` não casa nada. Filtro por pedaço de nome devolve
+ * resultado que o usuário não pediu — procurar `db` traria `db_connections`,
+ * `db_host` e `old_db` juntos — e num editor de configuração de produção o
+ * resultado precisa ser exatamente o que se digitou.
+ *
+ * Segue sem diferenciar caixa: `PORT` e `port` encontram o mesmo campo. Chave de
+ * JSON é case-sensitive, mas um filtro que exige acertar a caixa é atrito sem
+ * ganho — o casamento é do segmento inteiro de qualquer forma.
+ *
+ * A janela continua tendo de ser **consecutiva**: `pool.min` casa
+ * `DATABASE.pool.min`, e `db.min` não casa `db.pool.min`, porque pularia um
+ * nível.
  */
 export function matchesSegmentWindow(
   segments: readonly string[],
@@ -319,7 +327,7 @@ export function matchesSegmentWindow(
       const segment = segments[start + offset] as string;
       const term = query[offset] as string;
 
-      if (!segment.includes(term)) {
+      if (segment !== term) {
         allMatch = false;
         break;
       }

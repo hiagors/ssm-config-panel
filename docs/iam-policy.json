@@ -1,0 +1,60 @@
+{
+  "Version": "2012-10-17",
+  "Comment": [
+    "Política mínima para o SSM Config Panel. Substitua REGIAO, CONTA e o prefixo",
+    "de path pelos seus valores — a ferramenta não embute nenhum deles no código.",
+    "",
+    "Divergências em relação à lista do spec, com o motivo de cada uma:",
+    "",
+    "1. ssm:DescribeParameters ENTRA, e precisa de Resource: \"*\".",
+    "   GetParameter não devolve Tier nem KeyId — só Name, Type, Value, Version,",
+    "   LastModifiedDate, ARN e DataType. Preservar Tier e KeyId na gravação é",
+    "   requisito, e o limite de tamanho da validação depende do Tier. Os dois só",
+    "   existem em ParameterMetadata, que vem de DescribeParameters. A ação não",
+    "   aceita permissão por recurso; é a única concessão de escopo do desenho.",
+    "",
+    "2. ssm:GetParametersByPath SAI. A listagem usa DescribeParameters, que",
+    "   devolve apenas metadados. GetParametersByPath traria os valores junto,",
+    "   carregando segredo na memória do servidor só para desenhar uma lista.",
+    "",
+    "3. ssm:GetParameterHistory SAI. Histórico ficou fora de escopo por decisão;",
+    "   o rollback é coberto pelos backups locais em ./.backups. Se o histórico",
+    "   voltar, esta ação volta junto.",
+    "",
+    "Para uso somente-leitura, remova o statement ParameterWrite e a permissão",
+    "kms:GenerateDataKey."
+  ],
+  "Statement": [
+    {
+      "Sid": "ParameterRead",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+      "Resource": "arn:aws:ssm:REGIAO:CONTA:parameter/SEU-PREFIXO/*"
+    },
+    {
+      "Sid": "ParameterWrite",
+      "Effect": "Allow",
+      "Action": ["ssm:PutParameter"],
+      "Resource": "arn:aws:ssm:REGIAO:CONTA:parameter/SEU-PREFIXO/*"
+    },
+    {
+      "Sid": "ParameterMetadataAndListing",
+      "Comment": "Não aceita permissão por recurso — ver nota 1 acima.",
+      "Effect": "Allow",
+      "Action": ["ssm:DescribeParameters"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SecureStringDecryptAndEncrypt",
+      "Comment": "Decrypt para ler SecureString; GenerateDataKey para regravar.",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+      "Resource": "arn:aws:kms:REGIAO:CONTA:key/SUA-CHAVE",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.REGIAO.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
